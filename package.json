@@ -1,6 +1,6 @@
 {
   "name": "message-hub",
-  "version": "1.12.1",
+  "version": "1.12.2",
   "description": "Quo VOIP customer management and messaging webapp",
   "main": "server.js",
   "scripts": {
