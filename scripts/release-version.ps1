@@ -39,14 +39,12 @@ Write-Host "  VERSION"
 Write-Host "  package.json"
 Write-Host "  truenas-deployment.json"
 
-if ($CreateTag) {
-  git -C $repoRoot tag "v$Version"
-  Write-Host "Created git tag v$Version" -ForegroundColor Green
-}
-
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  git -C $repoRoot status"
 Write-Host "  git -C $repoRoot add VERSION package.json truenas-deployment.json"
 Write-Host "  git -C $repoRoot commit -m `"Release $Version`""
+if ($CreateTag) {
+  Write-Host "  git -C $repoRoot tag v$Version"
+}
 Write-Host "  git -C $repoRoot push origin main --tags"
