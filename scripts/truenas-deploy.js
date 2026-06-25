@@ -242,7 +242,10 @@ function buildService(existingService, config) {
 }
 
 async function upsertApp(socket, nextId, pending, existingApp, existingConfig, config) {
-  const existingServices = existingConfig?.custom_compose_config?.services || {};
+  const existingServices =
+    existingConfig?.custom_compose_config?.services ||
+    existingConfig?.services ||
+    {};
   const detectedServiceName = Object.keys(existingServices)[0] || config.serviceName;
   const existingService = existingServices[detectedServiceName] || {};
   config.serviceName = detectedServiceName;
