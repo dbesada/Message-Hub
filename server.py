@@ -42,7 +42,7 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
-        'version': '1.12.3',
+        'version': '1.12.4',
         'date':    '2026-06-25',
         'features': [
             'Updated public app metadata and manifest copy to better reflect Message Hub branding',

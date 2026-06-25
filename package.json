@@ -1,6 +1,6 @@
 {
   "name": "message-hub",
-  "version": "1.12.3",
+  "version": "1.12.4",
   "description": "Self-hosted message aggregation and booking triage hub with modular connectors.",
   "main": "server.js",
   "scripts": {
