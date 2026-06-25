@@ -99,3 +99,43 @@ jobs:
         run: |
           echo "Published ${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Published ${{ steps.release.outputs.image }}:latest" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-truenas:
+    needs: release
+    if: ${{ secrets.TRUENAS_API_KEY != '' && vars.TRUENAS_HOST != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Join Tailscale
+        if: ${{ secrets.TAILSCALE_AUTHKEY != '' }}
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Update TrueNAS app
+        env:
+          TRUENAS_API_KEY: ${{ secrets.TRUENAS_API_KEY }}
+          TRUENAS_HOST: ${{ vars.TRUENAS_HOST }}
+          TRUENAS_APP_ID: ${{ vars.TRUENAS_APP_ID }}
+          TRUENAS_SERVICE_NAME: ${{ vars.TRUENAS_SERVICE_NAME }}
+          TRUENAS_PUBLIC_URL: ${{ vars.TRUENAS_PUBLIC_URL }}
+          TRUENAS_HOST_PATH: ${{ vars.TRUENAS_HOST_PATH }}
+          TRUENAS_PRESERVE_DATA_PATH: ${{ vars.TRUENAS_PRESERVE_DATA_PATH }}
+          TRUENAS_REGISTRY_NAME: GitHub Container Registry
+          TRUENAS_REGISTRY_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
+          TRUENAS_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: node scripts/truenas-deploy.js
+
+      - name: Deploy summary
+        run: |
+          echo "TrueNAS deploy attempted for tag ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"

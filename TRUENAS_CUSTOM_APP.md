@@ -7,7 +7,8 @@ The preferred release flow is now:
 1. Commit the app to GitHub
 2. Push a release tag like `v1.12.1`
 3. GitHub Actions builds and publishes `ghcr.io/YOUR_GITHUB_OWNER/message-hub:1.12.1`
-4. TrueNAS pulls that image directly
+4. GitHub Actions optionally tells TrueNAS to redeploy that exact image
+5. TrueNAS pulls that image directly
 
 This removes the Windows Docker Desktop machine from the release path.
 
@@ -46,11 +47,13 @@ The repository contains two workflows:
 - `.github/workflows/container-ci.yml`
   - validates Python syntax
   - checks version metadata consistency
+  - validates the TrueNAS deploy helper syntax
   - performs a Docker build without pushing
 - `.github/workflows/container-release.yml`
   - publishes to GitHub Container Registry (`ghcr.io`)
   - pushes version tags from the repo's `VERSION` file
   - also updates the `latest` tag on release
+  - can optionally redeploy the TrueNAS app after the image is published
 
 Release process:
 
@@ -62,6 +65,12 @@ Release process:
 ```powershell
 git tag v1.12.1
 git push origin main --tags
+```
+
+To avoid hand-editing those files, you can use:
+
+```powershell
+.\scripts\release-version.ps1 -Version 1.12.2
 ```
 
 GitHub Actions will publish:
@@ -78,6 +87,45 @@ Required repository settings:
 
 No Docker credentials are required for publishing to `ghcr.io` when the workflow uses `GITHUB_TOKEN`.
 If the repository stays private, the container package will usually be private too. In that case, TrueNAS needs a registry credential for `ghcr.io` that uses a GitHub token with package read access.
+
+## Optional: Fully Automatic TrueNAS Deploys
+
+The repo now includes `scripts/truenas-deploy.js`, and the release workflow can call it automatically after each tagged release.
+
+Set these GitHub repository values before enabling that flow:
+
+Required secrets:
+
+- `TRUENAS_API_KEY`
+- `GHCR_PULL_USERNAME`
+- `GHCR_PULL_TOKEN`
+
+Required variable:
+
+- `TRUENAS_HOST`
+  - use the reachable API hostname for GitHub Actions
+  - if your NAS is only reachable over Tailscale, set this to the Tailscale DNS name
+
+Optional variables:
+
+- `TRUENAS_APP_ID`
+  - default: `quo-manager`
+- `TRUENAS_SERVICE_NAME`
+  - default: `quo-manager`
+- `TRUENAS_PUBLIC_URL`
+  - used to generate the icon URL label
+- `TRUENAS_HOST_PATH`
+  - only set this when you intentionally want to override the current mounted data path
+- `TRUENAS_PRESERVE_DATA_PATH`
+  - default behavior is to preserve the app's current data mount
+
+Optional secret:
+
+- `TAILSCALE_AUTHKEY`
+  - if set, the GitHub Actions deploy job joins your tailnet before calling the TrueNAS API
+
+For a first cutover from the old `quo-manager` app, keeping `TRUENAS_APP_ID=quo-manager` is the safest path.
+That preserves the live app identity and, by default, preserves the current data mount too.
 
 ## TrueNAS Custom App Settings
 
