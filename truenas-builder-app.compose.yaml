@@ -1,0 +1,12 @@
+services:
+  builder:
+    image: docker:27-cli
+    container_name: quo-builder-1-12-1
+    restart: "no"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/pool0/apps/message-hub:/mnt/pool0/apps/message-hub
+    command:
+      - sh
+      - -lc
+      - /mnt/pool0/apps/message-hub/inbox/truenas-build-push-1.12.1.sh

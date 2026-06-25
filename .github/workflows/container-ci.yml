@@ -1,0 +1,57 @@
+name: Container CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate release metadata
+        run: |
+          python <<'PY'
+          import json
+          from pathlib import Path
+
+          version = Path("VERSION").read_text(encoding="utf-8").strip()
+          deployment = json.loads(Path("truenas-deployment.json").read_text(encoding="utf-8"))
+          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+
+          if deployment["version"] != version:
+              raise SystemExit(f"truenas-deployment.json version {deployment['version']} does not match VERSION {version}")
+
+          if package["version"] != version:
+              raise SystemExit(f"package.json version {package['version']} does not match VERSION {version}")
+
+          image = deployment.get("image", "")
+          if ":" in image and image.rsplit(":", 1)[1] != version:
+              raise SystemExit(f"truenas-deployment.json image tag {image} does not match VERSION {version}")
+          PY
+
+      - name: Compile Python entrypoint
+        run: python -m py_compile server.py
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: quo-manager:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

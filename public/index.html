@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Message Hub</title>
+  <link rel="icon" href="app-icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="site.webmanifest">
+  <meta name="theme-color" content="#1c1f27" id="meta-theme-color">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── Main app ──────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="logo">Message Hub</span>
+      <select id="inbox-select" title="Active inbox"></select>
+    </div>
+    <div class="topbar-right">
+      <a class="btn-outline" href="/hub" style="display:inline-flex;align-items:center;text-decoration:none">Message Hub</a>
+      <button class="btn-outline" id="btn-new-contact">+ New Contact</button>
+      <button class="btn-outline" id="btn-bulk-open">Bulk Message</button>
+      <button class="btn-outline feat-btn" id="btn-vagaro-open">⇄ Vagaro Sync</button>
+      <button class="btn-outline feat-btn" id="btn-dupes-open">⇌ Merge Duplicates</button>
+      <button class="btn-sync" id="btn-sync">↻ Sync</button>
+      <button class="btn-sync feat-btn" id="btn-verify" style="border-color:rgba(251,191,36,.4);color:#fbbf24">✔ Verify Phones</button>
+      <button class="btn-icon" id="btn-settings" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <div id="credential-banner" class="hidden" style="margin:12px 16px 0;padding:12px 16px;border:1px solid var(--border);border-radius:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:var(--panel);box-shadow:0 10px 28px rgba(0,0,0,.08)">
+    <div>
+      <div style="font-weight:700">Credentials not configured</div>
+      <div class="muted" id="credential-banner-text">Open Settings to save your Quo API key and other tokens.</div>
+    </div>
+    <button class="btn-outline btn-sm" id="btn-open-credentials">Open Settings</button>
+  </div>
+
+  <div class="layout">
+
+    <!-- Sidebar: contact list -->
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <input type="text" id="search" placeholder="Search contacts…">
+        <div id="sync-status" class="sync-status"></div>
+        <div id="quality-bar" class="quality-bar"></div>
+      </div>
+      <div id="tag-bar" class="tag-bar"></div>
+      <div id="contact-list" class="contact-list"></div>
+      <div id="pagination" class="pagination"></div>
+      <div class="sidebar-footer">
+        <button class="version-chip" id="btn-changelog" title="What's New">
+          <span id="version-label">v–</span>
+          <span class="version-new hidden" id="version-new-dot">NEW</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="main">
+
+      <!-- Empty state -->
+      <div id="view-empty" class="view center-view">
+        <div class="empty-icon">💬</div>
+        <p>Select a contact to view their conversation</p>
+      </div>
+
+      <!-- Contact + messages view -->
+      <div id="view-contact" class="view hidden">
+        <div class="contact-header">
+          <div class="avatar large" id="cv-avatar"></div>
+          <div class="contact-header-info">
+            <h2 id="cv-name"></h2>
+            <div class="phone-row">
+              <span class="phone-display" id="cv-phone" title="Click to copy"></span>
+              <button class="btn-copy-phone hidden" id="btn-copy-phone" title="Copy number">⎘</button>
+              <a class="btn-tel hidden" id="btn-tel" href="#" title="Open dialer">📞</a>
+            </div>
+            <div class="contact-extra" id="cv-extra"></div>
+          </div>
+          <div class="contact-header-actions">
+            <button class="btn-outline btn-sm" id="btn-verify-contact" title="Re-fetch this contact from Quo">↻ Verify</button>
+            <button class="btn-outline btn-sm" id="btn-edit-contact">Edit</button>
+          </div>
+        </div>
+        <div id="cv-tags" class="tag-row"></div>
+        <div class="message-toolbar">
+          <div class="message-toolbar-left">
+            <button class="btn-outline btn-sm" id="btn-msg-refresh">Refresh</button>
+            <button class="btn-outline btn-sm" id="btn-msg-older">Load Older</button>
+            <span class="message-sync-label" id="msg-sync-label"></span>
+          </div>
+          <label class="message-option">
+            <input type="checkbox" id="send-mark-done">
+            <span>Mark sent thread done</span>
+          </label>
+        </div>
+        <div id="cv-messages" class="messages"></div>
+        <div class="compose">
+          <textarea id="compose-box" placeholder="Type a message… (Enter to send, Shift+Enter for newline)"></textarea>
+          <button class="btn-primary send-btn" id="btn-send">Send</button>
+        </div>
+      </div>
+
+      <!-- Bulk message view -->
+      <div id="view-bulk" class="view hidden">
+        <div class="bulk-header">
+          <h2>Bulk Message</h2>
+          <p>Each selected contact receives a separate message thread.</p>
+        </div>
+        <div class="bulk-compose">
+          <div class="bulk-left">
+            <div class="bulk-tag-bar" id="bulk-tag-bar"></div>
+            <div class="bulk-search-row">
+              <input type="text" id="bulk-search" placeholder="Filter contacts…">
+              <button class="btn-outline btn-sm" id="btn-select-all">Select Visible</button>
+              <button class="btn-outline btn-sm" id="btn-clear-all">Clear</button>
+            </div>
+            <div id="bulk-contact-list" class="contact-list bulk-list"></div>
+          </div>
+          <div class="bulk-right">
+            <div id="bulk-chip-area" class="chip-area"></div>
+
+            <!-- Mode toggle -->
+            <div class="compose-mode-toggle">
+              <button class="mode-btn active" id="mode-manual" data-mode="manual">✏️ Manual</button>
+              <button class="mode-btn" id="mode-ai" data-mode="ai">✨ AI Write</button>
+            </div>
+
+            <!-- Manual compose -->
+            <div id="compose-manual">
+              <div class="editor-toolbar">
+                <span class="editor-count" id="bulk-text-count">0 chars · 0 SMS</span>
+                <span class="editor-status" id="bulk-draft-status"></span>
+                <div class="dir-toggle" data-target="bulk-text" aria-label="Manual message direction">
+                  <button class="dir-btn active" data-dir="auto">Auto</button>
+                  <button class="dir-btn" data-dir="ltr">LTR</button>
+                  <button class="dir-btn" data-dir="rtl">RTL</button>
+                </div>
+                <button class="btn-outline btn-sm" id="btn-clear-bulk-draft">Clear Draft</button>
+              </div>
+              <textarea id="bulk-text" placeholder="Every selected contact receives this exact message…"></textarea>
+            </div>
+
+            <!-- AI compose -->
+            <div id="compose-ai" class="hidden">
+              <div class="editor-toolbar">
+                <span class="editor-count" id="ai-intent-count">0 chars</span>
+                <span class="editor-status" id="ai-draft-status"></span>
+                <div class="dir-toggle" data-target="ai-intent" aria-label="AI prompt direction">
+                  <button class="dir-btn active" data-dir="auto">Auto</button>
+                  <button class="dir-btn" data-dir="ltr">LTR</button>
+                  <button class="dir-btn" data-dir="rtl">RTL</button>
+                </div>
+                <button class="btn-outline btn-sm" id="btn-clear-ai-draft">Clear Draft</button>
+              </div>
+              <div class="ai-intent-row">
+                <textarea id="ai-intent" placeholder="Describe what you want to say… e.g. 'Thank them for being a loyal customer and let them know about our summer sale — 20% off all services this week only'"></textarea>
+              </div>
+              <div class="ai-key-row">
+                <input type="password" id="ai-anthropic-key" placeholder="Anthropic API key (sk-ant-…)">
+                <button class="btn-outline btn-sm" id="btn-save-ai-key" title="Save key">💾</button>
+                <span class="muted" id="ai-key-status"></span>
+              </div>
+              <button class="btn-ai-generate" id="btn-ai-generate">
+                <span class="ai-spark">✨</span> Generate Personalized Messages
+              </button>
+              <div id="ai-preview-list" class="ai-preview-list"></div>
+            </div>
+
+            <div class="bulk-actions">
+              <span id="bulk-count-label" class="muted">0 recipients selected</span>
+              <button class="btn-outline" id="btn-bulk-cancel">Cancel</button>
+              <button class="btn-primary" id="btn-bulk-send">Send Messages</button>
+            </div>
+            <div id="bulk-results" class="bulk-results"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Duplicate merge view -->
+      <div id="view-dupes" class="view hidden">
+        <div class="dupes-layout">
+          <div class="dupes-sidebar">
+            <div class="dupes-sidebar-header">
+              <h3>Potential Duplicates</h3>
+              <span id="dupes-count" class="muted"></span>
+            </div>
+            <div class="dupes-hint">Contacts matched by same phone, email, or name. You verify each merge.</div>
+            <div id="dupes-list" class="dupes-list"></div>
+            <button class="btn-outline" id="btn-dupes-close" style="margin:10px 12px">← Back</button>
+          </div>
+          <div class="dupes-main" id="dupes-main">
+            <div class="center-view" style="height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--muted)">
+              <div style="font-size:36px">⇌</div>
+              <p>Select a group on the left to review</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Vagaro Sync view -->
+      <div id="view-vagaro" class="view hidden">
+        <div class="vagaro-panel">
+          <h2>⇄ Vagaro → Quo Sync</h2>
+          <p class="vagaro-subtitle">Import your Vagaro customers as Quo contacts. Two methods available.</p>
+
+          <!-- Method 1: CSV Import -->
+          <div class="vsync-card">
+            <div class="vsync-card-header">
+              <span class="vsync-badge">Works Now</span>
+              <h3>Method 1 — CSV Import</h3>
+              <p>Export your customer list from Vagaro, then import it here. Covers all existing customers instantly, no API credentials needed.</p>
+            </div>
+            <ol class="vsync-steps">
+              <li>In Vagaro: <strong>Reports → Customer List Report → Export</strong> (choose CSV)</li>
+              <li>Drop the file below or click to select it</li>
+              <li>Review the preview, then click Import</li>
+            </ol>
+            <div class="csv-drop-zone" id="csv-drop-zone">
+              <input type="file" id="csv-file-input" accept=".csv" style="display:none">
+              <div class="drop-icon">📂</div>
+              <p>Drop Vagaro CSV here or <button class="btn-link" id="btn-csv-browse">browse</button></p>
+              <p class="muted" style="font-size:11px">Vagaro export columns: First Name, Last Name, Email, Cell Phone, etc.</p>
+            </div>
+            <div id="csv-preview" class="csv-preview hidden"></div>
+            <div class="vsync-actions hidden" id="csv-import-actions">
+              <button class="btn-primary" id="btn-csv-import">Import to Quo</button>
+              <button class="btn-outline" id="btn-csv-clear">Clear</button>
+            </div>
+            <div id="csv-import-progress" class="import-progress"></div>
+          </div>
+
+          <!-- Method 2: Webhook -->
+          <div class="vsync-card">
+            <div class="vsync-card-header">
+              <span class="vsync-badge future">Requires API Access</span>
+              <h3>Method 2 — Live Webhook Sync</h3>
+              <p>Vagaro pushes new and updated customers to this app automatically. Requires Vagaro API credentials (apply at <a href="https://www.vagaro.com/pro/updates/webhooks" target="_blank">vagaro.com/pro/updates/webhooks</a>, up to 5-day approval).</p>
+            </div>
+            <div class="vsync-webhook-config">
+              <div class="form-group">
+                <label>Your Webhook URL (point Vagaro here)</label>
+                <div class="copy-row">
+                  <input type="text" id="webhook-url-display" readonly>
+                  <button class="btn-outline btn-sm" id="btn-copy-webhook">Copy</button>
+                </div>
+                <small>In Vagaro: Settings → APIs &amp; Webhooks → Add Webhook → paste this URL → select "Customers" events</small>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Vagaro Client ID</label>
+                  <input type="text" id="vagaro-client-id" placeholder="From Vagaro APIs &amp; Webhooks settings">
+                </div>
+                <div class="form-group">
+                  <label>Vagaro Client Secret</label>
+                  <input type="password" id="vagaro-client-secret" placeholder="From Vagaro APIs &amp; Webhooks settings">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Vagaro Region</label>
+                <input type="text" id="vagaro-region" placeholder="e.g. usa03 (from your Vagaro URL bar)">
+              </div>
+              <div class="vsync-actions">
+                <button class="btn-primary" id="btn-vagaro-save-creds">Save Credentials</button>
+                <button class="btn-outline" id="btn-vagaro-test">Test Connection</button>
+              </div>
+              <div id="vagaro-creds-status" class="error-msg"></div>
+            </div>
+            <div id="webhook-log" class="webhook-log">
+              <div class="wl-header">Sync Log <span id="wl-count" class="muted"></span></div>
+              <div id="wl-entries"></div>
+            </div>
+          </div>
+
+          <button class="btn-outline" id="btn-vagaro-close" style="margin-top:8px">← Back</button>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Modal: create / edit contact -->
+  <div id="modal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3 id="modal-title">New Contact</h3>
+      <div class="form-row">
+        <div class="form-group"><label>First Name *</label><input id="m-first" type="text"></div>
+        <div class="form-group"><label>Last Name</label><input id="m-last" type="text"></div>
+      </div>
+      <div class="form-group"><label>Phone (E.164)</label><input id="m-phone" type="text" placeholder="+15551234567"></div>
+      <div class="form-group"><label>Email</label><input id="m-email" type="email"></div>
+      <div class="form-group"><label>Company</label><input id="m-company" type="text"></div>
+      <div class="form-group"><label>Role / Title</label><input id="m-role" type="text"></div>
+      <div id="m-custom-fields"></div>
+      <div class="modal-actions">
+        <button class="btn-outline" id="btn-modal-cancel">Cancel</button>
+        <button class="btn-primary" id="btn-modal-save">Save Contact</button>
+      </div>
+      <div class="error-msg" id="modal-error"></div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="modal-settings" class="modal-overlay hidden">
+    <div class="modal-box settings-box">
+      <div class="settings-header">
+        <h3>Settings</h3>
+        <button class="btn-icon" id="btn-settings-close">✕</button>
+      </div>
+
+      <!-- Credentials -->
+      <div class="settings-section">
+        <div class="settings-section-title">Credentials</div>
+        <div class="settings-hint">Saved on this server. Leave a secret blank to keep the current saved value.</div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Quo API key</div>
+            <div class="setting-desc">Used for sync, send, verify, and webhook writes.</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+            <input type="password" id="quo-api-key" placeholder="Paste Quo API key" style="min-width:260px">
+            <button class="btn-primary btn-sm" id="btn-save-quo-key">Save</button>
+          </div>
+          <div class="setting-result muted" id="quo-key-status"></div>
+        </div>
+      </div>
+
+      <!-- Features -->
+      <div class="settings-section">
+        <div class="settings-section-title">Features</div>
+        <div class="settings-hint">Show or hide buttons in the toolbar. Hiding a feature doesn't delete anything.</div>
+
+        <div class="setting-row" data-setting="showVagaroSync">
+          <div class="setting-info">
+            <div class="setting-label">Vagaro Sync</div>
+            <div class="setting-desc">Show the ⇄ Vagaro Sync button</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="showVagaroSync"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row" data-setting="showMergeDuplicates">
+          <div class="setting-info">
+            <div class="setting-label">Merge Duplicates</div>
+            <div class="setting-desc">Show the ⇌ Merge Duplicates button</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="showMergeDuplicates"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row" data-setting="showVerifyPhones">
+          <div class="setting-info">
+            <div class="setting-label">Verify Phones</div>
+            <div class="setting-desc">Show the ✔ Verify Phones button</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="showVerifyPhones"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row" data-setting="showAiCompose">
+          <div class="setting-info">
+            <div class="setting-label">AI Compose</div>
+            <div class="setting-desc">Show the ✨ AI Write tab in Bulk Message</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="showAiCompose"><span class="track"></span></label>
+        </div>
+      </div>
+
+      <!-- Sync -->
+      <div class="settings-section">
+        <div class="settings-section-title">Sync</div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Auto-sync on login</div>
+            <div class="setting-desc">Automatically sync contacts when the app opens</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="autoSyncOnLogin"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row" id="row-sync-age">
+          <div class="setting-info">
+            <div class="setting-label">Sync if older than</div>
+            <div class="setting-desc">Skip auto-sync if contacts were recently updated</div>
+          </div>
+          <select class="setting-select" data-key="autoSyncMaxAgeHours">
+            <option value="1">1 hour</option>
+            <option value="6">6 hours</option>
+            <option value="24">24 hours</option>
+            <option value="168">1 week</option>
+          </select>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Smart sync</div>
+            <div class="setting-desc">Skip per-contact enrichment when list already has phone numbers (much faster)</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="smartSync"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">API rate limit</div>
+            <div class="setting-desc">Requests per second sent to Quo. Lower is safer when Quo starts returning 429 errors.</div>
+          </div>
+          <div class="setting-slider-group">
+            <input type="range" min="1" max="8" step="1" data-key="rateLimitRps" class="setting-slider">
+            <span class="setting-slider-val" id="rps-label">4 req/s</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bulk Messaging -->
+      <div class="settings-section">
+        <div class="settings-section-title">Bulk Messaging</div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Confirm before sending</div>
+            <div class="setting-desc">Show a confirmation dialog before sending bulk messages</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="confirmBeforeBulkSend"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Autosave bulk drafts</div>
+            <div class="setting-desc">Restore manual message text and AI prompt when reopening Bulk Message</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="autosaveBulkDrafts"><span class="track"></span></label>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div class="settings-section">
+        <div class="settings-section-title">Messages</div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Cache messages locally</div>
+            <div class="setting-desc">Load message threads from local DB instantly, then refresh from Quo</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="cacheMessages"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Mark sent threads done</div>
+            <div class="setting-desc">Send messages with Quo setInboxStatus=done so bulk/API sends do not stay open</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="markSentDone"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Messages per fetch</div>
+            <div class="setting-desc">How many messages to request from Quo per thread page</div>
+          </div>
+          <select class="setting-select" data-key="messagePageSize">
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Quo message webhook URL</div>
+            <div class="setting-desc">Use this when creating a Quo API webhook for message.received and message.delivered</div>
+          </div>
+          <button class="btn-outline btn-sm" id="btn-copy-quo-webhook">Copy URL</button>
+        </div>
+      </div>
+
+      <!-- Display -->
+      <div class="settings-section">
+        <div class="settings-section-title">Display</div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Theme</div>
+            <div class="setting-desc">Use dark mode, light mode, or follow your computer setting</div>
+          </div>
+          <select class="setting-select" data-key="themeMode">
+            <option value="system">Follow system</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Contacts per page</div>
+            <div class="setting-desc">How many contacts to show at a time in the sidebar</div>
+          </div>
+          <select class="setting-select" data-key="contactsPerPage">
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="75">75</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Warn on missing phone</div>
+            <div class="setting-desc">Show ⚠ badge on contacts without a phone number</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="showNoPhoneWarning"><span class="track"></span></label>
+        </div>
+      </div>
+
+      <!-- AI -->
+      <div class="settings-section" id="settings-ai-section">
+        <div class="settings-section-title">AI Compose</div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Claude model</div>
+            <div class="setting-desc">Model used to generate personalized messages</div>
+          </div>
+          <select class="setting-select" data-key="anthropicModel">
+            <option value="claude-sonnet-4-5">Sonnet 4.5 (fast, recommended)</option>
+            <option value="claude-opus-4-5">Opus 4.5 (best quality, slower)</option>
+            <option value="claude-haiku-4-5">Haiku 4.5 (fastest, lowest cost)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Database -->
+      <div class="settings-section">
+        <div class="settings-section-title">Database Cleanup</div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Cleanup audit</div>
+            <div class="setting-desc">Check local orphan rows, Unknown contacts, and duplicate groups before deleting anything</div>
+          </div>
+          <button class="btn-outline btn-sm" id="btn-db-audit">Audit DB</button>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Remove Unknown contacts</div>
+            <div class="setting-desc">Delete local contacts with no name, company, phone, or email. They may return if Quo still has them.</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="cleanupUnknownContacts"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Remove email-only contacts</div>
+            <div class="setting-desc">Delete local records that only have an email and no name or phone. They may return if Quo still has them.</div>
+          </div>
+          <label class="toggle"><input type="checkbox" data-key="cleanupEmailOnlyContacts"><span class="track"></span></label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Clean local DB</div>
+            <div class="setting-desc">Remove local orphans and optionally Unknown contacts, then refresh duplicate count</div>
+          </div>
+          <button class="btn-outline btn-sm" id="btn-db-clean">Clean DB</button>
+        </div>
+        <div id="db-cleanup-result" class="setting-result"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- What's New modal -->
+  <div id="modal-changelog" class="modal-overlay hidden">
+    <div class="modal-box" style="width:520px;max-height:80vh">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <h3 style="margin:0">What's New</h3>
+        <button class="btn-icon" id="btn-changelog-close">✕</button>
+      </div>
+      <div id="changelog-body"></div>
+    </div>
+  </div>
+
+</div><!-- #app -->
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Don't bake the local DB or secrets into the image
+quo_manager.db
+quo_manager.db-shm
+quo_manager.db-wal
+*.db
+*.db-shm
+*.db-wal
+data/
+.env
+*.log
+service.log
+nssm/
+nssm.zip
+__pycache__/
+*.pyc
+.git/
+icon.ico
+launch.vbs
+install-service.ps1
+setup-tunnel.ps1

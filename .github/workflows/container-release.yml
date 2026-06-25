@@ -1,0 +1,101 @@
+name: Release Container
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish. Must match VERSION."
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: message-hub
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: release
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version || '' }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          version = Path("VERSION").read_text(encoding="utf-8").strip()
+          deployment = json.loads(Path("truenas-deployment.json").read_text(encoding="utf-8"))
+          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+
+          if deployment["version"] != version:
+              raise SystemExit(f"truenas-deployment.json version {deployment['version']} does not match VERSION {version}")
+
+          if package["version"] != version:
+              raise SystemExit(f"package.json version {package['version']} does not match VERSION {version}")
+
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          requested = os.environ.get("INPUT_VERSION", "").strip()
+
+          if requested:
+              release_version = requested
+          elif ref_name.startswith("v"):
+              release_version = ref_name[1:]
+          else:
+              release_version = version
+
+          if release_version != version:
+              raise SystemExit(f"release version {release_version} does not match VERSION {version}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"version={release_version}\n")
+              handle.write(f"image=ghcr.io/{os.environ['GITHUB_REPOSITORY_OWNER']}/message-hub\n")
+          PY
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.release.outputs.image }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Release summary
+        run: |
+          echo "Published ${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published ${{ steps.release.outputs.image }}:latest" >> "$GITHUB_STEP_SUMMARY"

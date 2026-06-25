@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Message Hub</title>
+  <meta name="theme-color" content="#f5efe7">
+  <link rel="stylesheet" href="/hub.css">
+</head>
+<body>
+  <div class="backdrop backdrop-a"></div>
+  <div class="backdrop backdrop-b"></div>
+
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand-wrap">
+        <a class="brand" href="/">
+          <span class="brand-mark"></span>
+          <span>Message Hub</span>
+        </a>
+        <div class="brand-sub">Modular inbox for Gmail, Meta, TikTok, Quo, and future connectors.</div>
+      </div>
+      <div class="topbar-actions">
+        <a class="ghost-link" href="/">Message Hub</a>
+        <button class="primary-btn" id="syncBtn" type="button">Sync sample inbox</button>
+      </div>
+    </header>
+
+    <section class="summary-strip">
+      <div class="summary-card">
+        <div class="summary-label">Mississauga</div>
+        <div class="summary-value" id="mississaugaCount">0</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Toronto</div>
+        <div class="summary-value" id="torontoCount">0</div>
+      </div>
+      <div class="summary-card muted-card">
+        <div class="summary-label">Needs review</div>
+        <div class="summary-value" id="reviewCount">0</div>
+      </div>
+      <div class="summary-card muted-card">
+        <div class="summary-label">Connectors</div>
+        <div class="summary-value" id="connectorCount">0</div>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <aside class="sidebar">
+        <div class="panel-title-row">
+          <h2>Sources</h2>
+          <button class="text-btn" id="addConnectorOpen" type="button">Add platform</button>
+        </div>
+        <div id="connectorList" class="connector-list"></div>
+      </aside>
+
+      <main class="inbox">
+        <div class="inbox-toolbar">
+          <div class="search-wrap">
+            <input id="searchInput" type="search" placeholder="Search sender, preview, or location">
+          </div>
+          <div class="chip-row" id="locationFilter"></div>
+          <div class="chip-row" id="statusFilter"></div>
+        </div>
+        <div class="inbox-meta">
+          <span id="resultCount">0 messages</span>
+          <span class="dot-sep">•</span>
+          <span id="activeFilterLabel">All sources</span>
+        </div>
+        <div id="messageList" class="message-list"></div>
+      </main>
+
+      <aside class="detail-panel">
+        <div id="detailEmpty" class="detail-empty">
+          <div class="detail-hero-mark"></div>
+          <h2>Select a message</h2>
+          <p>The right panel shows a booking thread, the current tag, and quick actions.</p>
+        </div>
+
+        <div id="detailView" class="detail-view hidden">
+          <div class="detail-top">
+            <div>
+              <div id="detailSource" class="detail-source"></div>
+              <h2 id="detailSubject"></h2>
+              <div id="detailSender" class="detail-sender"></div>
+            </div>
+            <div class="status-stack">
+              <span id="detailStatus" class="status-pill"></span>
+              <span id="detailConfidence" class="confidence-pill"></span>
+            </div>
+          </div>
+
+          <div class="detail-chip-row" id="detailLocationRow"></div>
+          <div class="detail-body" id="detailBody"></div>
+
+          <div class="detail-actions">
+            <button class="secondary-btn" id="classifyBtn" type="button">Auto tag</button>
+            <button class="secondary-btn" id="draftBtn" type="button">Draft reply</button>
+            <button class="secondary-btn" id="reviewBtn" type="button">Needs review</button>
+            <button class="primary-btn" id="doneBtn" type="button">Mark done</button>
+          </div>
+
+          <div class="draft-card">
+            <div class="panel-title-row tight">
+              <h3>Suggested reply</h3>
+              <button class="text-btn" id="copyDraftBtn" type="button">Copy</button>
+            </div>
+            <textarea id="draftBox" placeholder="Select Draft reply to generate a location-aware response."></textarea>
+          </div>
+
+          <div class="detail-meta">
+            <div><span>Received</span><strong id="detailReceived"></strong></div>
+            <div><span>Thread</span><strong id="detailThread"></strong></div>
+            <div><span>Connector</span><strong id="detailConnector"></strong></div>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </div>
+
+  <div id="connectorModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card">
+      <div class="panel-title-row">
+        <h2 id="connectorModalTitle">Add platform</h2>
+        <button class="icon-btn" id="closeConnectorModal" type="button">×</button>
+      </div>
+      <p class="modal-copy" id="connectorModalCopy">Add a platform, set its connection details, and sync messages into the hub.</p>
+      <form id="connectorForm" class="connector-form">
+        <input type="hidden" id="connectorId" name="id" value="">
+        <label>
+          Platform
+          <select id="connectorKind" name="kind">
+            <option value="gmail">Gmail</option>
+            <option value="quo">Quo</option>
+            <option value="meta">Meta</option>
+            <option value="tiktok">TikTok</option>
+            <option value="webhook">Custom webhook</option>
+          </select>
+        </label>
+        <label>
+          Connection name
+          <input id="connectorName" name="name" placeholder="Inbox, Meta DM, TikTok, Quo SMS..." required>
+        </label>
+        <div id="connectorFields" class="connector-fields"></div>
+        <label class="inline-toggle">
+          <input id="connectorEnabled" type="checkbox" checked>
+          <span>Enabled</span>
+        </label>
+        <p id="connectorHelp" class="connector-help"></p>
+        <button class="primary-btn" type="submit" id="saveConnectorBtn">Save connector</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/hub.js" defer></script>
+</body>
+</html>
