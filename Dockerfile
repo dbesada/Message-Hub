@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 LABEL org.opencontainers.image.title="Message Hub" \
-      org.opencontainers.image.description="Customer, tag, and messaging hub for Quo and other connectors." \
+      org.opencontainers.image.description="Self-hosted message aggregation and booking triage hub with modular connectors." \
       org.opencontainers.image.source="https://github.com/dbesada/Message-Hub" \
       org.opencontainers.image.vendor="Message Hub" \
       org.opencontainers.image.url="http://192.168.50.230:3000" \

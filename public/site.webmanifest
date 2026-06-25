@@ -1,7 +1,7 @@
 {
   "name": "Message Hub",
-  "short_name": "Quo",
-  "description": "Customer, tag, and messaging manager for Quo.",
+  "short_name": "Msg Hub",
+  "description": "Self-hosted message aggregation and booking triage hub.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

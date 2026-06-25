@@ -40,7 +40,7 @@ Write-Host "Installing $ServiceName service..." -ForegroundColor Cyan
 & $NssmExe install $ServiceName $PythonExe $ScriptPath
 & $NssmExe set     $ServiceName AppDirectory   $AppDir
 & $NssmExe set     $ServiceName DisplayName    "Message Hub"
-& $NssmExe set     $ServiceName Description    "Quo VOIP contact & messaging webapp"
+& $NssmExe set     $ServiceName Description    "Message Hub self-hosted messaging and booking triage app"
 & $NssmExe set     $ServiceName Start          SERVICE_AUTO_START
 & $NssmExe set     $ServiceName AppStdout      "$AppDir\service.log"
 & $NssmExe set     $ServiceName AppStderr      "$AppDir\service.log"

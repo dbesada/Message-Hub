@@ -102,10 +102,22 @@ jobs:
 
   deploy-truenas:
     needs: release
-    if: ${{ secrets.TRUENAS_API_KEY != '' && vars.TRUENAS_HOST != '' }}
+    if: ${{ vars.TRUENAS_HOST != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      TRUENAS_API_KEY: ${{ secrets.TRUENAS_API_KEY }}
+      TRUENAS_HOST: ${{ vars.TRUENAS_HOST }}
+      TRUENAS_APP_ID: ${{ vars.TRUENAS_APP_ID }}
+      TRUENAS_SERVICE_NAME: ${{ vars.TRUENAS_SERVICE_NAME }}
+      TRUENAS_PUBLIC_URL: ${{ vars.TRUENAS_PUBLIC_URL }}
+      TRUENAS_HOST_PATH: ${{ vars.TRUENAS_HOST_PATH }}
+      TRUENAS_PRESERVE_DATA_PATH: ${{ vars.TRUENAS_PRESERVE_DATA_PATH }}
+      TRUENAS_REGISTRY_NAME: GitHub Container Registry
+      TRUENAS_REGISTRY_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
+      TRUENAS_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
 
     steps:
       - name: Checkout
@@ -116,26 +128,28 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Check deploy prerequisites
+        id: prereqs
+        shell: bash
+        run: |
+          if [ -z "${TRUENAS_API_KEY:-}" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping TrueNAS deploy because TRUENAS_API_KEY is not set." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
       - name: Join Tailscale
-        if: ${{ secrets.TAILSCALE_AUTHKEY != '' }}
+        if: ${{ steps.prereqs.outputs.ready == 'true' && env.TAILSCALE_AUTHKEY != '' }}
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          authkey: ${{ env.TAILSCALE_AUTHKEY }}
 
       - name: Update TrueNAS app
-        env:
-          TRUENAS_API_KEY: ${{ secrets.TRUENAS_API_KEY }}
-          TRUENAS_HOST: ${{ vars.TRUENAS_HOST }}
-          TRUENAS_APP_ID: ${{ vars.TRUENAS_APP_ID }}
-          TRUENAS_SERVICE_NAME: ${{ vars.TRUENAS_SERVICE_NAME }}
-          TRUENAS_PUBLIC_URL: ${{ vars.TRUENAS_PUBLIC_URL }}
-          TRUENAS_HOST_PATH: ${{ vars.TRUENAS_HOST_PATH }}
-          TRUENAS_PRESERVE_DATA_PATH: ${{ vars.TRUENAS_PRESERVE_DATA_PATH }}
-          TRUENAS_REGISTRY_NAME: GitHub Container Registry
-          TRUENAS_REGISTRY_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
-          TRUENAS_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
+        if: ${{ steps.prereqs.outputs.ready == 'true' }}
         run: node scripts/truenas-deploy.js
 
       - name: Deploy summary
+        if: ${{ steps.prereqs.outputs.ready == 'true' }}
         run: |
           echo "TrueNAS deploy attempted for tag ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"

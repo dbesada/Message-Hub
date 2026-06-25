@@ -162,7 +162,7 @@ After deploy, open:
 http://TRUENAS_IP:CHOSEN_NODE_PORT
 ```
 
-The app opens directly. Save your Quo API key and other credentials inside the app's Settings modal.
+The app opens directly. Save your connector credentials, including your Quo API key if you use that connector, inside the app's Settings modal.
 
 ## Updating Later
 

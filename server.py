@@ -42,6 +42,16 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
+        'version': '1.12.3',
+        'date':    '2026-06-25',
+        'features': [
+            'Updated public app metadata and manifest copy to better reflect Message Hub branding',
+            'Release container now bundles the VERSION file so deployed health checks report the correct app version',
+            'TrueNAS deployment helper now preserves existing live compose mounts correctly during first-cutover updates',
+            'GitHub Actions release workflow now skips deploy steps safely when TrueNAS secrets are not configured',
+        ],
+    },
+    {
         'version': '1.12.1',
         'date':    '2026-06-24',
         'features': [

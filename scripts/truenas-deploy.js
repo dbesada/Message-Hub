@@ -300,7 +300,7 @@ async function main() {
     image,
     imageDescription: envValue(
       'TRUENAS_IMAGE_DESCRIPTION',
-      'Customer, tag, and messaging hub for Quo and other connectors.',
+      'Self-hosted message aggregation and booking triage hub with modular connectors.',
     ),
     nodePort: envValue('TRUENAS_NODE_PORT', String(deployment.node_port || 3000)),
     rateLimitRps: envValue('TRUENAS_RATE_LIMIT_RPS', String(deployment.rate_limit_rps || 4)),
