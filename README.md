@@ -18,6 +18,8 @@ The current product combines:
 - Exposes webhook ingest routes for supported connectors
 - Supports pull-based sync for connectors such as Gmail via Google login and the local Quo cache
 - Lets you test saved connector setup from the hub so missing account details are easier to spot
+- Lets you edit or remove connectors directly from the hub
+- Exposes inbox layout, refresh cadence, reply signature, and source display settings in the UI
 - Opens directly without an app-level login gate
 
 ## Current Connectors
@@ -46,12 +48,14 @@ Current connector types in the codebase:
 
 The new Message Hub workflow for triaging inbound conversations:
 
-- connector list with add/edit/pause actions
+- connector list with add/edit/pause/delete actions
 - source filtering
 - location tagging for `Mississauga` and `Toronto`
 - summary counts
 - webhook endpoints per connector
 - sync actions for supported connectors
+- responsive layouts for desktop, tablet, and mobile
+- hub settings for compact mode, auto refresh, default source, and reply signatures
 
 ### `/`
 

@@ -2,8 +2,11 @@ const state = {
   connectors: [],
   messages: [],
   connectorKinds: [],
+  settings: {},
   selectedId: null,
   editingConnectorId: null,
+  autoRefreshHandle: null,
+  hasAppliedDefaultSourceFilter: false,
   filters: {
     source: 'all',
     location: 'all',
@@ -37,6 +40,7 @@ const els = {
   mississaugaCount: document.getElementById('mississaugaCount'),
   torontoCount: document.getElementById('torontoCount'),
   reviewCount: document.getElementById('reviewCount'),
+  openSettingsBtn: document.getElementById('openSettingsBtn'),
   syncBtn: document.getElementById('syncBtn'),
   draftBtn: document.getElementById('draftBtn'),
   classifyBtn: document.getElementById('classifyBtn'),
@@ -61,6 +65,28 @@ const els = {
   connectorSetupDetails: document.getElementById('connectorSetupDetails'),
   connectGmailBtn: document.getElementById('connectGmailBtn'),
   testConnectorBtn: document.getElementById('testConnectorBtn'),
+  deleteConnectorBtn: document.getElementById('deleteConnectorBtn'),
+  settingsModal: document.getElementById('settingsModal'),
+  closeSettingsModal: document.getElementById('closeSettingsModal'),
+  settingsForm: document.getElementById('settingsForm'),
+  settingsLayoutMode: document.getElementById('settingsLayoutMode'),
+  settingsDefaultSource: document.getElementById('settingsDefaultSource'),
+  settingsMessageLimit: document.getElementById('settingsMessageLimit'),
+  settingsAutoRefresh: document.getElementById('settingsAutoRefresh'),
+  settingsReplySignature: document.getElementById('settingsReplySignature'),
+  settingsCompactMode: document.getElementById('settingsCompactMode'),
+  settingsShowConnectorDetails: document.getElementById('settingsShowConnectorDetails'),
+  saveSettingsBtn: document.getElementById('saveSettingsBtn'),
+};
+
+const DEFAULT_SETTINGS = {
+  message_limit: 300,
+  auto_refresh_seconds: 0,
+  compact_mode: false,
+  show_connector_details: true,
+  default_source_filter: 'all',
+  reply_signature: '',
+  layout_mode: 'auto',
 };
 
 function fmtTime(iso) {
@@ -116,6 +142,22 @@ function getKindMeta(kind) {
   };
 }
 
+function getSettings() {
+  return { ...DEFAULT_SETTINGS, ...(state.settings || {}) };
+}
+
+function effectiveSourceFilter(sourceId) {
+  if (sourceId === 'all') return 'all';
+  return state.connectors.some((connector) => connector.id === sourceId) ? sourceId : 'all';
+}
+
+function applyDefaultSourceFilter(force = false) {
+  const settings = getSettings();
+  if (!force && state.hasAppliedDefaultSourceFilter) return;
+  state.filters.source = effectiveSourceFilter(settings.default_source_filter || 'all');
+  state.hasAppliedDefaultSourceFilter = true;
+}
+
 function formatJsonValue(value) {
   if (value === undefined || value === null) return '';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
@@ -153,6 +195,80 @@ function updateConnectorActionButtons(connector = null, kind = els.connectorKind
   const hasConnector = Boolean(connector?.id);
   els.connectGmailBtn.disabled = !hasConnector;
   els.connectGmailBtn.textContent = connector?.config?.google_email ? 'Reconnect Gmail' : (hasConnector ? 'Connect Gmail' : 'Save first');
+}
+
+function updateDeleteConnectorButton(connector = null) {
+  const hasConnector = Boolean(connector?.id);
+  els.deleteConnectorBtn.classList.toggle('hidden', !hasConnector);
+  els.deleteConnectorBtn.disabled = !hasConnector;
+}
+
+function populateSettingsSourceOptions() {
+  const currentValue = effectiveSourceFilter(els.settingsDefaultSource.value || getSettings().default_source_filter || 'all');
+  const options = ['<option value="all">All sources</option>'];
+  state.connectors.forEach((connector) => {
+    options.push(`<option value="${escapeHtml(connector.id)}">${escapeHtml(connector.name)}</option>`);
+  });
+  els.settingsDefaultSource.innerHTML = options.join('');
+  els.settingsDefaultSource.value = effectiveSourceFilter(currentValue);
+}
+
+function fillSettingsForm() {
+  const settings = getSettings();
+  populateSettingsSourceOptions();
+  els.settingsLayoutMode.value = settings.layout_mode || 'auto';
+  els.settingsDefaultSource.value = effectiveSourceFilter(settings.default_source_filter || 'all');
+  els.settingsMessageLimit.value = String(settings.message_limit ?? DEFAULT_SETTINGS.message_limit);
+  els.settingsAutoRefresh.value = String(settings.auto_refresh_seconds ?? DEFAULT_SETTINGS.auto_refresh_seconds);
+  els.settingsReplySignature.value = settings.reply_signature || '';
+  els.settingsCompactMode.checked = !!settings.compact_mode;
+  els.settingsShowConnectorDetails.checked = settings.show_connector_details !== false;
+}
+
+function readSettingsForm() {
+  return {
+    layout_mode: String(els.settingsLayoutMode.value || 'auto').trim(),
+    default_source_filter: effectiveSourceFilter(els.settingsDefaultSource.value || 'all'),
+    message_limit: Number(els.settingsMessageLimit.value || DEFAULT_SETTINGS.message_limit),
+    auto_refresh_seconds: Number(els.settingsAutoRefresh.value || 0),
+    reply_signature: String(els.settingsReplySignature.value || '').trim(),
+    compact_mode: !!els.settingsCompactMode.checked,
+    show_connector_details: !!els.settingsShowConnectorDetails.checked,
+  };
+}
+
+function scheduleAutoRefresh() {
+  if (state.autoRefreshHandle) {
+    window.clearInterval(state.autoRefreshHandle);
+    state.autoRefreshHandle = null;
+  }
+  const seconds = Number(getSettings().auto_refresh_seconds || 0);
+  if (seconds <= 0) return;
+  state.autoRefreshHandle = window.setInterval(() => {
+    loadBootstrap({ preserveSelection: true }).catch((error) => {
+      console.error('Auto refresh failed', error);
+    });
+  }, seconds * 1000);
+}
+
+function applySettingsToUI() {
+  const settings = getSettings();
+  document.body.classList.toggle('compact-mode', !!settings.compact_mode);
+  document.body.classList.toggle('hide-connector-details', settings.show_connector_details === false);
+  document.body.dataset.layoutMode = settings.layout_mode || 'auto';
+  populateSettingsSourceOptions();
+  scheduleAutoRefresh();
+}
+
+function openSettingsModal() {
+  fillSettingsForm();
+  els.settingsModal.classList.remove('hidden');
+  els.settingsModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeSettingsModal() {
+  els.settingsModal.classList.add('hidden');
+  els.settingsModal.setAttribute('aria-hidden', 'true');
 }
 
 function escapeHtml(value) {
@@ -317,6 +433,7 @@ function fillConnectorForm(connector = null) {
   els.testConnectorBtn.disabled = !connector?.id;
   els.testConnectorBtn.textContent = connector?.id ? 'Test setup' : 'Save first';
   updateConnectorActionButtons(connector, kind);
+  updateDeleteConnectorButton(connector);
   renderSetupPanel(connector || {
     setup: {
       summary: 'Save this connector to test it',
@@ -340,6 +457,7 @@ function refreshConnectorModal(kind = els.connectorKind.value || 'gmail') {
     : `Add the ${meta.label} connection and sync its messages into the hub.`;
   const existingConnector = state.connectors.find((item) => item.id === state.editingConnectorId);
   updateConnectorActionButtons(existingConnector || { id: state.editingConnectorId, kind }, kind);
+  updateDeleteConnectorButton(existingConnector);
   renderSetupPanel(existingConnector && existingConnector.kind === kind ? existingConnector : {
     setup: {
       summary: 'Save this connector to test it',
@@ -365,25 +483,28 @@ function statusLabel(status) {
 
 function draftFor(message) {
   const location = message.location_tag || 'your preferred location';
+  let draft;
   if (location === 'Mississauga') {
-    return [
+    draft = [
       'Thanks for reaching out.',
       'We can help with your Mississauga booking.',
       'Please send your preferred day and time, and we will confirm the next available slot.',
     ].join(' ');
-  }
-  if (location === 'Toronto') {
-    return [
+  } else if (location === 'Toronto') {
+    draft = [
       'Thanks for reaching out.',
       'We can help with your Toronto booking.',
       'Please send your preferred day and time, and we will confirm the next available slot.',
     ].join(' ');
+  } else {
+    draft = [
+      'Thanks for reaching out.',
+      'Please let us know whether you would like to book in Mississauga or Toronto,',
+      'and share your preferred day and time so we can confirm availability.',
+    ].join(' ');
   }
-  return [
-    'Thanks for reaching out.',
-    'Please let us know whether you would like to book in Mississauga or Toronto,',
-    'and share your preferred day and time so we can confirm availability.',
-  ].join(' ');
+  const signature = String(getSettings().reply_signature || '').trim();
+  return signature ? `${draft}\n\n${signature}` : draft;
 }
 
 function filterMessages() {
@@ -452,6 +573,8 @@ function renderConnectors() {
   els.connectorCount.textContent = String(state.connectors.length);
   const activeSource = state.filters.source === 'all' ? 'All sources' : getConnectorName(state.filters.source);
   els.activeFilterLabel.textContent = activeSource;
+  const settings = getSettings();
+  const showDetails = settings.show_connector_details !== false;
 
   els.connectorList.innerHTML = state.connectors.map((connector) => {
     const statusClass = getConnectorStatusClass(connector);
@@ -476,9 +599,9 @@ function renderConnectors() {
           </div>
         </div>
         <div class="connector-note">${note || 'Ready for a new adapter'}</div>
-        ${setupDetails.map((item) => `<div class="connector-note">${escapeHtml(item)}</div>`).join('')}
-        ${connector.ingest_supported ? `<div class="connector-note">${webhookLabel}: <code>${webhookUrl}</code></div>` : ''}
-        ${connector.kind === 'meta' ? `<div class="connector-note">Saved Meta verify tokens stay on the server and are used during the webhook challenge.</div>` : ''}
+        ${showDetails ? setupDetails.map((item) => `<div class="connector-note">${escapeHtml(item)}</div>`).join('') : ''}
+        ${showDetails && connector.ingest_supported ? `<div class="connector-note">${webhookLabel}: <code>${webhookUrl}</code></div>` : ''}
+        ${showDetails && connector.kind === 'meta' ? `<div class="connector-note">Saved Meta verify tokens stay on the server and are used during the webhook challenge.</div>` : ''}
       </article>
     `;
   }).join('');
@@ -487,6 +610,7 @@ function renderConnectors() {
     card.addEventListener('click', (event) => {
       if (event.target.closest('[data-toggle-connector]')) return;
       state.filters.source = card.dataset.connectorId;
+      state.hasAppliedDefaultSourceFilter = true;
       renderAll();
     });
   });
@@ -666,6 +790,13 @@ async function loadBootstrap(options = {}) {
   state.connectors = payload.connectors || [];
   state.messages = payload.messages || [];
   state.connectorKinds = payload.connector_kinds || [];
+  state.settings = { ...DEFAULT_SETTINGS, ...(payload.settings || {}) };
+  applySettingsToUI();
+  if (options.applyDefaultSourceFilter || !state.hasAppliedDefaultSourceFilter) {
+    applyDefaultSourceFilter(options.applyDefaultSourceFilter);
+  } else if (state.filters.source !== 'all') {
+    state.filters.source = effectiveSourceFilter(state.filters.source);
+  }
   renderCounts(payload.summary || {});
 
   const selectedStillVisible = state.messages.some((message) => message.id === state.selectedId);
@@ -714,6 +845,41 @@ async function patchConnector(connectorId, payload) {
     throw new Error(body.error || `Unable to update connector (${response.status})`);
   }
   return response.json();
+}
+
+async function deleteConnector(connectorId) {
+  const response = await fetch(`/hub/api/connectors/${encodeURIComponent(connectorId)}`, {
+    method: 'DELETE',
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.error || `Unable to delete connector (${response.status})`);
+  }
+  if (state.filters.source === connectorId) {
+    state.filters.source = 'all';
+  }
+  closeModal();
+  await loadBootstrap({ preserveSelection: true });
+}
+
+async function saveHubSettings(event) {
+  event.preventDefault();
+  const payload = readSettingsForm();
+  const response = await fetch('/hub/api/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.error || `Unable to save settings (${response.status})`);
+  }
+  state.settings = { ...DEFAULT_SETTINGS, ...(body.data || {}) };
+  state.hasAppliedDefaultSourceFilter = false;
+  applySettingsToUI();
+  applyDefaultSourceFilter(true);
+  closeSettingsModal();
+  await loadBootstrap({ preserveSelection: true, applyDefaultSourceFilter: true });
 }
 
 async function runConnectorTest(connectorId, button = null) {
@@ -765,6 +931,8 @@ function closeModal() {
   els.connectorSetupDetails.innerHTML = '';
   els.connectGmailBtn.classList.add('hidden');
   els.connectGmailBtn.disabled = true;
+  els.deleteConnectorBtn.classList.add('hidden');
+  els.deleteConnectorBtn.disabled = true;
   els.connectorModal.classList.add('hidden');
   els.connectorModal.setAttribute('aria-hidden', 'true');
 }
@@ -854,6 +1022,7 @@ function bindEvents() {
     renderAll();
   });
 
+  els.openSettingsBtn.addEventListener('click', openSettingsModal);
   els.syncBtn.addEventListener('click', async () => {
     els.syncBtn.textContent = 'Refreshing...';
     try {
@@ -873,6 +1042,10 @@ function bindEvents() {
   els.connectorModal.addEventListener('click', (event) => {
     if (event.target === els.connectorModal) closeModal();
   });
+  els.closeSettingsModal.addEventListener('click', closeSettingsModal);
+  els.settingsModal.addEventListener('click', (event) => {
+    if (event.target === els.settingsModal) closeSettingsModal();
+  });
   els.connectorKind.addEventListener('change', () => {
     refreshConnectorModal(els.connectorKind.value);
   });
@@ -884,14 +1057,30 @@ function bindEvents() {
     if (!state.editingConnectorId) return;
     await runConnectorTest(state.editingConnectorId);
   });
+  els.deleteConnectorBtn.addEventListener('click', async () => {
+    if (!state.editingConnectorId) return;
+    const connector = state.connectors.find((item) => item.id === state.editingConnectorId);
+    const connectorName = connector?.name || state.editingConnectorId;
+    const confirmed = window.confirm(`Delete "${connectorName}" and remove its synced messages from Message Hub?`);
+    if (!confirmed) return;
+    await deleteConnector(state.editingConnectorId);
+  });
   els.connectorForm.addEventListener('submit', (event) => {
     submitConnectorForm(event).catch((error) => {
       alert(error.message);
     });
   });
+  els.settingsForm.addEventListener('submit', (event) => {
+    saveHubSettings(event).catch((error) => {
+      alert(error.message);
+    });
+  });
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeModal();
+    if (event.key === 'Escape') {
+      closeModal();
+      closeSettingsModal();
+    }
     if (event.metaKey || event.ctrlKey) {
       if (event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -902,7 +1091,7 @@ function bindEvents() {
 }
 
 bindEvents();
-loadBootstrap().catch((error) => {
+loadBootstrap({ applyDefaultSourceFilter: true }).catch((error) => {
   els.messageList.innerHTML = `
     <div class="detail-empty" style="min-height:320px;">
       <div class="detail-hero-mark"></div>

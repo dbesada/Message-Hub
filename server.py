@@ -964,6 +964,74 @@ HUB_PRESERVE_ON_BLANK_CONFIG_KEYS = {
     'webhook_secret',
 }
 
+HUB_DEFAULT_SETTINGS = {
+    'message_limit': 300,
+    'auto_refresh_seconds': 0,
+    'compact_mode': False,
+    'show_connector_details': True,
+    'default_source_filter': 'all',
+    'reply_signature': '',
+    'layout_mode': 'auto',
+}
+
+
+def _hub_normalize_setting(key, value):
+    if key == 'message_limit':
+        try:
+            return max(25, min(1000, int(value or 0)))
+        except Exception:
+            return HUB_DEFAULT_SETTINGS[key]
+    if key == 'auto_refresh_seconds':
+        try:
+            return max(0, min(3600, int(value or 0)))
+        except Exception:
+            return HUB_DEFAULT_SETTINGS[key]
+    if key in ('compact_mode', 'show_connector_details'):
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+    if key == 'reply_signature':
+        return str(value or '').strip()[:280]
+    if key == 'default_source_filter':
+        normalized = str(value or 'all').strip() or 'all'
+        return normalized
+    if key == 'layout_mode':
+        normalized = str(value or 'auto').strip().lower()
+        return normalized if normalized in ('auto', 'wide', 'stacked') else HUB_DEFAULT_SETTINGS[key]
+    return value
+
+
+def _hub_get_settings(conn):
+    settings = dict(HUB_DEFAULT_SETTINGS)
+    rows = conn.execute('SELECT key, value FROM hub_settings').fetchall()
+    for row in rows:
+        key = str(row['key'] or '').strip()
+        if key not in HUB_DEFAULT_SETTINGS:
+            continue
+        raw = row['value']
+        parsed = raw
+        with contextlib.suppress(Exception):
+            parsed = json.loads(raw)
+        settings[key] = _hub_normalize_setting(key, parsed)
+    return settings
+
+
+def _hub_set_settings(conn, updates):
+    settings = _hub_get_settings(conn)
+    for key, value in (updates or {}).items():
+        if key not in HUB_DEFAULT_SETTINGS:
+            continue
+        settings[key] = _hub_normalize_setting(key, value)
+        conn.execute(
+            '''
+            INSERT INTO hub_settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ''',
+            (key, _json_dump(settings[key])),
+        )
+    return settings
+
 
 def _hub_effective_gmail_transport(config):
     transport = str((config or {}).get('transport') or '').strip().lower()
@@ -2351,7 +2419,7 @@ def _hub_summary(messages):
     return summary
 
 
-def _hub_fetch_state(conn, connector_id='', location_tag='', status='', search=''):
+def _hub_fetch_state(conn, connector_id='', location_tag='', status='', search='', limit=0):
     query = 'SELECT * FROM hub_messages'
     clauses = []
     params = []
@@ -2370,6 +2438,9 @@ def _hub_fetch_state(conn, connector_id='', location_tag='', status='', search='
     if clauses:
         query += ' WHERE ' + ' AND '.join(clauses)
     query += ' ORDER BY received_at DESC, updated_at DESC'
+    if int(limit or 0) > 0:
+        query += ' LIMIT ?'
+        params.append(int(limit))
     rows = conn.execute(query, params).fetchall()
     messages = [_hub_message_row(row) for row in rows]
     if search:
@@ -2738,15 +2809,17 @@ def hub_bootstrap():
     with get_db() as conn:
         _hub_seed_if_needed(conn)
         _hub_recount_connectors(conn)
+        settings = _hub_get_settings(conn)
         connectors = [
             _hub_connector_row(row)
             for row in conn.execute('SELECT * FROM hub_connectors ORDER BY enabled DESC, name').fetchall()
         ]
-        messages = _hub_fetch_state(conn)
+        messages = _hub_fetch_state(conn, limit=settings.get('message_limit', 0))
     return jsonify({
         'connectors': connectors,
         'messages': messages,
         'summary': _hub_summary(messages),
+        'settings': settings,
         'location_tags': list(HUB_LOCATION_TAGS),
         'connector_kinds': [
             {'kind': kind, **profile}
@@ -2847,6 +2920,33 @@ def hub_connector_update(connector_id):
         )
         row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
         return jsonify({'ok': True, 'data': _hub_connector_row(row)})
+
+
+@app.route('/hub/api/connectors/<connector_id>', methods=['DELETE'])
+def hub_connector_delete(connector_id):
+    with get_db() as conn:
+        _hub_seed_if_needed(conn)
+        row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
+        if not row:
+            return jsonify({'error': 'Connector not found'}), 404
+        conn.execute('DELETE FROM hub_messages WHERE connector_id=?', (connector_id,))
+        conn.execute('DELETE FROM hub_connectors WHERE id=?', (connector_id,))
+        conn.execute('DELETE FROM app_credentials WHERE key LIKE ?', (_hub_connector_secret_key(connector_id, '') + '%',))
+        _hub_recount_connectors(conn)
+    return jsonify({'ok': True, 'deleted_id': connector_id})
+
+
+@app.route('/hub/api/settings', methods=['GET', 'PATCH'])
+def hub_settings_api():
+    with get_db() as conn:
+        _hub_seed_if_needed(conn)
+        if request.method == 'GET':
+            return jsonify({'data': _hub_get_settings(conn)})
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({'error': 'Settings payload must be a JSON object'}), 400
+        settings = _hub_set_settings(conn, payload)
+        return jsonify({'ok': True, 'data': settings})
 
 
 @app.route('/hub/api/connectors/<connector_id>/gmail/oauth/start')

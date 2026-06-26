@@ -22,6 +22,7 @@
       </div>
       <div class="topbar-actions">
         <a class="ghost-link" href="/">Message Hub</a>
+        <button class="secondary-btn" id="openSettingsBtn" type="button">Settings</button>
         <button class="primary-btn" id="syncBtn" type="button">Refresh inbox</button>
       </div>
     </header>
@@ -155,6 +156,62 @@
           <button class="primary-btn" type="submit" id="saveConnectorBtn">Save connector</button>
           <button class="secondary-btn hidden" type="button" id="connectGmailBtn">Connect Gmail</button>
           <button class="secondary-btn" type="button" id="testConnectorBtn">Test setup</button>
+          <button class="danger-btn hidden" type="button" id="deleteConnectorBtn">Delete connector</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card settings-card">
+      <div class="panel-title-row">
+        <h2>Hub settings</h2>
+        <button class="icon-btn" id="closeSettingsModal" type="button">×</button>
+      </div>
+      <p class="modal-copy">Tune how Message Hub loads, refreshes, and fits the screen. These settings apply across the app.</p>
+      <form id="settingsForm" class="connector-form">
+        <div class="field-grid two">
+          <label>
+            Layout mode
+            <select id="settingsLayoutMode" name="layout_mode">
+              <option value="auto">Auto</option>
+              <option value="wide">Wide desktop</option>
+              <option value="stacked">Always stacked</option>
+            </select>
+          </label>
+          <label>
+            Default source
+            <select id="settingsDefaultSource" name="default_source_filter">
+              <option value="all">All sources</option>
+            </select>
+          </label>
+        </div>
+        <div class="field-grid two">
+          <label>
+            Message load limit
+            <input id="settingsMessageLimit" name="message_limit" type="number" min="25" max="1000" step="25">
+          </label>
+          <label>
+            Auto refresh (seconds)
+            <input id="settingsAutoRefresh" name="auto_refresh_seconds" type="number" min="0" max="3600" step="15">
+          </label>
+        </div>
+        <label>
+          Reply signature
+          <textarea id="settingsReplySignature" name="reply_signature" rows="4" placeholder="Optional text appended to drafted replies"></textarea>
+        </label>
+        <div class="settings-grid">
+          <label class="inline-toggle settings-toggle">
+            <input id="settingsCompactMode" name="compact_mode" type="checkbox">
+            <span>Use compact cards and spacing</span>
+          </label>
+          <label class="inline-toggle settings-toggle">
+            <input id="settingsShowConnectorDetails" name="show_connector_details" type="checkbox">
+            <span>Show setup details and webhook info on source cards</span>
+          </label>
+        </div>
+        <div class="connector-actions">
+          <button class="primary-btn" type="submit" id="saveSettingsBtn">Save settings</button>
         </div>
       </form>
     </div>
