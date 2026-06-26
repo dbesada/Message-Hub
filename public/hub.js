@@ -59,6 +59,7 @@ const els = {
   connectorSetupPanel: document.getElementById('connectorSetupPanel'),
   connectorSetupSummary: document.getElementById('connectorSetupSummary'),
   connectorSetupDetails: document.getElementById('connectorSetupDetails'),
+  connectGmailBtn: document.getElementById('connectGmailBtn'),
   testConnectorBtn: document.getElementById('testConnectorBtn'),
 };
 
@@ -142,6 +143,18 @@ function renderSetupPanel(connector = null) {
   els.connectorSetupDetails.innerHTML = details.map((item) => `<div>${escapeHtml(item)}</div>`).join('');
 }
 
+function updateConnectorActionButtons(connector = null, kind = els.connectorKind.value || 'gmail') {
+  const isGmail = kind === 'gmail';
+  els.connectGmailBtn.classList.toggle('hidden', !isGmail);
+  if (!isGmail) {
+    els.connectGmailBtn.disabled = true;
+    return;
+  }
+  const hasConnector = Boolean(connector?.id);
+  els.connectGmailBtn.disabled = !hasConnector;
+  els.connectGmailBtn.textContent = connector?.config?.google_email ? 'Reconnect Gmail' : (hasConnector ? 'Connect Gmail' : 'Save first');
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -155,7 +168,34 @@ function renderConnectorFields(kind, config = {}) {
   const cfg = { ...getKindMeta(kind).default_config, ...(config || {}) };
   const commonNotes = cfg.notes || '';
   if (kind === 'gmail') {
+    const transport = String(cfg.transport || (cfg.username ? 'imap' : 'google_oauth')).trim();
+    const connectedEmail = cfg.google_email ? `<div class="connector-note">Connected Google account: ${escapeHtml(formatJsonValue(cfg.google_email))}</div>` : '';
+    if (transport === 'google_oauth') {
+      return `
+        <label>Connection mode
+          <select name="transport">
+            <option value="google_oauth" selected>Google login (recommended)</option>
+            <option value="imap">IMAP app password (legacy)</option>
+          </select>
+        </label>
+        <label>Google client ID<input name="google_client_id" value="${escapeHtml(formatJsonValue(cfg.google_client_id))}" placeholder="Google OAuth web client ID"></label>
+        <label>Google client secret<input name="google_client_secret" type="password" value="" placeholder="Paste once; stays saved on the server"></label>
+        <div class="field-grid two">
+          <label>Mailbox / label<input name="mailbox" value="${escapeHtml(formatJsonValue(cfg.mailbox || 'INBOX'))}" placeholder="INBOX"></label>
+          <label>Max messages<input name="max_messages" type="number" min="1" max="500" value="${escapeHtml(formatJsonValue(cfg.max_messages ?? 100))}"></label>
+        </div>
+        <div class="connector-note">After saving, Message Hub can send you through the Google login flow and keep the refresh token on the server.</div>
+        ${connectedEmail}
+        <label>Notes<textarea name="notes" rows="3" placeholder="Optional setup notes">${escapeHtml(commonNotes)}</textarea></label>
+      `;
+    }
     return `
+      <label>Connection mode
+        <select name="transport">
+          <option value="google_oauth">Google login (recommended)</option>
+          <option value="imap" selected>IMAP app password (legacy)</option>
+        </select>
+      </label>
       <label>Host<input name="host" value="${escapeHtml(formatJsonValue(cfg.host || 'imap.gmail.com'))}" placeholder="imap.gmail.com"></label>
       <div class="field-grid two">
         <label>Port<input name="port" type="number" min="1" max="65535" value="${escapeHtml(formatJsonValue(cfg.port ?? 993))}"></label>
@@ -172,6 +212,7 @@ function renderConnectorFields(kind, config = {}) {
   }
 
   if (kind === 'quo') {
+    const effectiveLimit = cfg.limit_locked === false && Number(cfg.limit ?? 0) === 250 ? 0 : Number(cfg.limit ?? 0);
     return `
       <label>Source mode
         <select name="mode">
@@ -181,9 +222,10 @@ function renderConnectorFields(kind, config = {}) {
       </label>
       <label>API key<input name="api_key" value="${escapeHtml(formatJsonValue(cfg.api_key))}" placeholder="Only needed for API mode"></label>
       <div class="field-grid two">
-        <label>Limit<input name="limit" type="number" min="1" max="1000" value="${escapeHtml(formatJsonValue(cfg.limit ?? 250))}"></label>
+        <label>Limit<input name="limit" type="number" min="0" max="5000" value="${escapeHtml(formatJsonValue(effectiveLimit))}" placeholder="0 = all cached messages"></label>
         <label>Source label<input name="source_label" value="${escapeHtml(formatJsonValue(cfg.source_label || 'Quo'))}" placeholder="Quo"></label>
       </div>
+      <div class="connector-note">Set the limit to 0 to pull the full Quo cache instead of only the newest messages.</div>
       <label>Notes<textarea name="notes" rows="3" placeholder="Optional setup notes">${escapeHtml(commonNotes)}</textarea></label>
     `;
   }
@@ -236,12 +278,22 @@ function readConnectorForm() {
     config[key] = String(value ?? '').trim();
   }
   if (kind === 'gmail') {
-    config.ssl = !!els.connectorForm.querySelector('input[name="ssl"]')?.checked;
-    config.port = Number(config.port || 993);
+    config.transport = String(config.transport || 'google_oauth').trim();
     config.max_messages = Number(config.max_messages || 100);
+    if (config.transport === 'imap') {
+      config.ssl = !!els.connectorForm.querySelector('input[name="ssl"]')?.checked;
+      config.port = Number(config.port || 993);
+    } else {
+      delete config.host;
+      delete config.port;
+      delete config.ssl;
+      delete config.username;
+      delete config.password;
+    }
   }
   if (kind === 'quo') {
-    config.limit = Number(config.limit || 250);
+    config.limit = Number(config.limit || 0);
+    config.limit_locked = true;
   }
   if (kind === 'meta' && config.channels) {
     config.channels = config.channels.split(',').map((item) => item.trim()).filter(Boolean);
@@ -264,6 +316,7 @@ function fillConnectorForm(connector = null) {
     : `Add the ${meta.label} connection and sync its messages into the hub.`;
   els.testConnectorBtn.disabled = !connector?.id;
   els.testConnectorBtn.textContent = connector?.id ? 'Test setup' : 'Save first';
+  updateConnectorActionButtons(connector, kind);
   renderSetupPanel(connector || {
     setup: {
       summary: 'Save this connector to test it',
@@ -286,6 +339,7 @@ function refreshConnectorModal(kind = els.connectorKind.value || 'gmail') {
     ? `Update the ${meta.label} connection, then sync it again to pull fresh messages.`
     : `Add the ${meta.label} connection and sync its messages into the hub.`;
   const existingConnector = state.connectors.find((item) => item.id === state.editingConnectorId);
+  updateConnectorActionButtons(existingConnector || { id: state.editingConnectorId, kind }, kind);
   renderSetupPanel(existingConnector && existingConnector.kind === kind ? existingConnector : {
     setup: {
       summary: 'Save this connector to test it',
@@ -709,6 +763,8 @@ function closeModal() {
   els.connectorSetupPanel.classList.add('hidden');
   els.connectorSetupSummary.textContent = '';
   els.connectorSetupDetails.innerHTML = '';
+  els.connectGmailBtn.classList.add('hidden');
+  els.connectGmailBtn.disabled = true;
   els.connectorModal.classList.add('hidden');
   els.connectorModal.setAttribute('aria-hidden', 'true');
 }
@@ -741,15 +797,20 @@ async function submitConnectorForm(event) {
       }),
     }
   );
+  const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
     throw new Error(body.error || `Unable to save connector (${response.status})`);
   }
 
+  await loadBootstrap({ preserveSelection: true });
+  const savedConnector = body.data || state.connectors.find((item) => item.id === connectorId) || null;
+  if (savedConnector?.kind === 'gmail' && payload.config.transport === 'google_oauth' && payload.config.google_client_id && !savedConnector?.config?.google_email) {
+    window.location.href = `/hub/api/connectors/${encodeURIComponent(savedConnector.id)}/gmail/oauth/start?return_to=${encodeURIComponent('/hub')}`;
+    return;
+  }
   els.connectorForm.reset();
   closeModal();
-  await loadBootstrap({ preserveSelection: true });
 }
 
 async function handleDraftClick() {
@@ -814,6 +875,10 @@ function bindEvents() {
   });
   els.connectorKind.addEventListener('change', () => {
     refreshConnectorModal(els.connectorKind.value);
+  });
+  els.connectGmailBtn.addEventListener('click', () => {
+    if (!state.editingConnectorId) return;
+    window.location.href = `/hub/api/connectors/${encodeURIComponent(state.editingConnectorId)}/gmail/oauth/start?return_to=${encodeURIComponent('/hub')}`;
   });
   els.testConnectorBtn.addEventListener('click', async () => {
     if (!state.editingConnectorId) return;

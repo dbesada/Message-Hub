@@ -1,4 +1,5 @@
 """Message Hub — Flask server with SQLite DB and connection-pooled API client"""
+import base64
 import contextlib
 import html
 import email as email_module
@@ -9,22 +10,30 @@ import re
 import sqlite3
 import threading
 import time
+import secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
+from urllib.parse import urlencode
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, redirect
 
 app = Flask(__name__, static_folder='public', static_url_path='')
 
 QUO_BASE  = 'https://api.openphone.com/v1'
 BASE_DIR = os.path.dirname(__file__)
 VERSION_FILE = os.path.join(BASE_DIR, 'VERSION')
+GMAIL_OAUTH_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
+GMAIL_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1'
+GMAIL_OAUTH_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
+HUB_OAUTH_STATE_TTL_SECONDS = 900
+HUB_GMAIL_OAUTH_STATES = {}
 
 
 def load_app_version():
@@ -41,6 +50,14 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 # ── App version & changelog ───────────────────────────────────────────────────
 APP_VERSION = load_app_version()
 CHANGELOG = [
+    {
+        'version': '1.14.0',
+        'date':    '2026-06-26',
+        'features': [
+            'Quo local sync now upgrades older connectors past the old 250-message cap so cached history is not cut off mid-month',
+            'Gmail connectors now support Google login with server-side OAuth token storage and Gmail API sync, while keeping IMAP as a legacy fallback',
+        ],
+    },
     {
         'version': '1.13.0',
         'date':    '2026-06-26',
@@ -473,6 +490,46 @@ def _credential_get_any(*keys, default=''):
     return default
 
 
+def _hub_connector_secret_key(connector_id, name):
+    return f'hub_connector::{connector_id}::{name}'
+
+
+def _hub_connector_secret_get(conn, connector_id, name, default=''):
+    return _credential_get(conn, _hub_connector_secret_key(connector_id, name), default)
+
+
+def _hub_connector_secret_set(conn, connector_id, name, value):
+    _credential_upsert(conn, _hub_connector_secret_key(connector_id, name), value)
+
+
+def _hub_prune_gmail_oauth_states():
+    now = time.time()
+    for state, payload in list(HUB_GMAIL_OAUTH_STATES.items()):
+        if float(payload.get('expires_at') or 0) <= now:
+            HUB_GMAIL_OAUTH_STATES.pop(state, None)
+
+
+def _hub_issue_gmail_oauth_state(connector_id, return_to='/hub'):
+    _hub_prune_gmail_oauth_states()
+    state = secrets.token_urlsafe(24)
+    HUB_GMAIL_OAUTH_STATES[state] = {
+        'connector_id': connector_id,
+        'return_to': return_to or '/hub',
+        'expires_at': time.time() + HUB_OAUTH_STATE_TTL_SECONDS,
+    }
+    return state
+
+
+def _hub_consume_gmail_oauth_state(state):
+    _hub_prune_gmail_oauth_states()
+    payload = HUB_GMAIL_OAUTH_STATES.pop(state, None)
+    if not payload:
+        return None
+    if float(payload.get('expires_at') or 0) <= time.time():
+        return None
+    return payload
+
+
 def _resolve_quo_api_key(body=None):
     body = body or {}
     for candidate in (body.get('apiKey'), body.get('quoKey')):
@@ -637,13 +694,11 @@ HUB_CONNECTOR_KIND_ALIASES = {
 HUB_CONNECTOR_KIND_DEFS = {
     'gmail': {
         'label': 'Gmail',
-        'description': 'Pulls business inbox mail via IMAP, so you can triage booking requests in one place.',
+        'description': 'Pulls business inbox mail through Google login and the Gmail API, with IMAP left available as a legacy fallback.',
         'sync_supported': True,
         'ingest_supported': False,
         'default_config': {
-            'host': 'imap.gmail.com',
-            'port': 993,
-            'ssl': True,
+            'transport': 'google_oauth',
             'mailbox': 'INBOX',
             'max_messages': 100,
         },
@@ -655,7 +710,8 @@ HUB_CONNECTOR_KIND_DEFS = {
         'ingest_supported': True,
         'default_config': {
             'mode': 'local_db',
-            'limit': 250,
+            'limit': 0,
+            'limit_locked': False,
         },
     },
     'meta': {
@@ -900,6 +956,84 @@ def _hub_profile(kind: str):
     })
 
 
+HUB_PRESERVE_ON_BLANK_CONFIG_KEYS = {
+    'password',
+    'api_key',
+    'access_token',
+    'verify_token',
+    'webhook_secret',
+}
+
+
+def _hub_effective_gmail_transport(config):
+    transport = str((config or {}).get('transport') or '').strip().lower()
+    if transport in ('google_oauth', 'imap'):
+        return transport
+    if str((config or {}).get('username') or '').strip() or str((config or {}).get('password') or '').strip():
+        return 'imap'
+    return 'google_oauth'
+
+
+def _hub_prepare_connector_config(conn, connector_id, kind, incoming_config, existing_config=None):
+    profile = _hub_profile(kind)
+    defaults = profile.get('default_config', {}) if isinstance(profile.get('default_config', {}), dict) else {}
+    existing = existing_config if isinstance(existing_config, dict) else {}
+    incoming = incoming_config if isinstance(incoming_config, dict) else {}
+    merged = {**defaults, **existing}
+
+    google_client_secret = str(incoming.get('google_client_secret') or '').strip()
+    if google_client_secret:
+        _hub_connector_secret_set(conn, connector_id, 'google_client_secret', google_client_secret)
+
+    for key, value in incoming.items():
+        if key == 'google_client_secret':
+            continue
+        if key in HUB_PRESERVE_ON_BLANK_CONFIG_KEYS and str(value or '').strip() == '':
+            if existing.get(key):
+                merged[key] = existing.get(key)
+            continue
+        merged[key] = value
+
+    if kind == 'quo':
+        try:
+            merged['limit'] = int(merged.get('limit') or 0)
+        except Exception:
+            merged['limit'] = 0
+        if 'limit' in incoming:
+            merged['limit_locked'] = True
+        elif 'limit_locked' not in merged:
+            merged['limit_locked'] = False
+
+    if kind == 'gmail':
+        transport = _hub_effective_gmail_transport(merged)
+        merged['transport'] = transport
+        merged['mailbox'] = str(merged.get('mailbox') or 'INBOX').strip() or 'INBOX'
+        try:
+            merged['max_messages'] = max(1, min(500, int(merged.get('max_messages') or 100)))
+        except Exception:
+            merged['max_messages'] = 100
+        google_client_id = str(merged.get('google_client_id') or '').strip()
+        if google_client_id:
+            merged['google_client_id'] = google_client_id
+        else:
+            merged.pop('google_client_id', None)
+        merged.pop('google_client_secret', None)
+        if transport == 'google_oauth':
+            for key in ('host', 'port', 'ssl', 'username', 'password'):
+                if key in merged and key not in incoming and key not in existing:
+                    merged.pop(key, None)
+        else:
+            host = str(merged.get('host') or 'imap.gmail.com').strip() or 'imap.gmail.com'
+            merged['host'] = host
+            try:
+                merged['port'] = int(merged.get('port') or 993)
+            except Exception:
+                merged['port'] = 993
+            merged['ssl'] = bool(merged.get('ssl', True))
+
+    return merged
+
+
 HUB_CONNECTOR_SYNCERS = {}
 HUB_CONNECTOR_INGESTERS = {}
 
@@ -1092,6 +1226,153 @@ def _hub_extract_email_text(message):
     return re.sub(r'\n{3,}', '\n\n', body).strip()
 
 
+def _hub_gmail_redirect_uri():
+    return request.url_root.rstrip('/') + '/hub/api/gmail/oauth/callback'
+
+
+def _hub_gmail_decode_base64(value):
+    data = str(value or '').strip()
+    if not data:
+        return ''
+    padding = '=' * (-len(data) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode((data + padding).encode('utf-8'))
+        return decoded.decode('utf-8', errors='replace')
+    except Exception:
+        return ''
+
+
+def _hub_gmail_extract_payload_text(payload):
+    if not isinstance(payload, dict):
+        return ''
+    mime_type = str(payload.get('mimeType') or '').lower()
+    body_data = ((payload.get('body') or {}) if isinstance(payload.get('body'), dict) else {}).get('data')
+    text = _hub_gmail_decode_base64(body_data)
+    parts = payload.get('parts') if isinstance(payload.get('parts'), list) else []
+    plain_texts = []
+    html_texts = []
+    if text:
+        if mime_type == 'text/html':
+            html_texts.append(_hub_strip_html(text))
+        elif mime_type.startswith('text/'):
+            plain_texts.append(text.strip())
+    for part in parts:
+        nested = _hub_gmail_extract_payload_text(part)
+        if not nested:
+            continue
+        nested_mime = str(part.get('mimeType') or '').lower()
+        if nested_mime == 'text/html':
+            html_texts.append(_hub_strip_html(nested))
+        else:
+            plain_texts.append(nested.strip())
+    body = '\n'.join(item for item in plain_texts if item).strip()
+    if body:
+        return re.sub(r'\n{3,}', '\n\n', body).strip()
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(item for item in html_texts if item).strip()).strip()
+
+
+def _hub_gmail_headers(payload):
+    headers = {}
+    for item in payload.get('headers') if isinstance(payload, dict) else []:
+        name = str(item.get('name') or '').strip()
+        if not name:
+            continue
+        headers[name.lower()] = _hub_decode_header(item.get('value') or '')
+    return headers
+
+
+def _hub_gmail_list_params(config, page_token=''):
+    params = {
+        'userId': 'me',
+        'maxResults': max(1, min(500, int(config.get('max_messages') or 100))),
+    }
+    mailbox = str(config.get('mailbox') or 'INBOX').strip() or 'INBOX'
+    mailbox_key = mailbox.upper()
+    builtin = {
+        'INBOX', 'SENT', 'SPAM', 'TRASH', 'IMPORTANT',
+        'STARRED', 'UNREAD', 'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL',
+        'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
+    }
+    if mailbox_key in builtin:
+        params['labelIds'] = mailbox_key
+    elif mailbox:
+        params['q'] = f'label:{mailbox}'
+    if page_token:
+        params['pageToken'] = page_token
+    return params
+
+
+def _hub_gmail_api_json(method, path, access_token, params=None):
+    response = _session.request(
+        method,
+        f'{GMAIL_API_BASE}{path}',
+        params=params,
+        headers={
+            'Authorization': f'Bearer {access_token}',
+            'Accept': 'application/json',
+        },
+        timeout=20,
+    )
+    data = {}
+    with contextlib.suppress(Exception):
+        data = response.json()
+    if response.status_code >= 400:
+        detail = ''
+        if isinstance(data, dict):
+            error_payload = data.get('error')
+            if isinstance(error_payload, dict):
+                detail = error_payload.get('message') or ''
+            elif error_payload:
+                detail = str(error_payload)
+        raise ValueError(detail or f'Gmail API request failed with status {response.status_code}')
+    return data if isinstance(data, dict) else {}
+
+
+def _hub_gmail_refresh_access_token(conn, connector_id, config):
+    client_id = str(config.get('google_client_id') or '').strip()
+    client_secret = _hub_connector_secret_get(conn, connector_id, 'google_client_secret')
+    refresh_token = _hub_connector_secret_get(conn, connector_id, 'google_refresh_token')
+    if not client_id or not client_secret or not refresh_token:
+        raise ValueError('Gmail Google login is not connected yet')
+    response = requests.post(
+        GMAIL_OAUTH_TOKEN_URL,
+        data={
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'refresh_token': refresh_token,
+            'grant_type': 'refresh_token',
+        },
+        timeout=20,
+    )
+    data = response.json() if response.content else {}
+    if response.status_code >= 400:
+        error_message = ''
+        if isinstance(data, dict):
+            error_message = data.get('error_description') or data.get('error') or ''
+        raise ValueError(error_message or f'Unable to refresh Gmail access token ({response.status_code})')
+    access_token = str((data or {}).get('access_token') or '').strip()
+    if not access_token:
+        raise ValueError('Gmail token refresh did not return an access token')
+    return access_token
+
+
+def _hub_gmail_finalize_oauth(conn, connector_id, config, token_data):
+    refresh_token = str((token_data or {}).get('refresh_token') or '').strip()
+    if refresh_token:
+        _hub_connector_secret_set(conn, connector_id, 'google_refresh_token', refresh_token)
+    access_token = str((token_data or {}).get('access_token') or '').strip()
+    if not access_token:
+        raise ValueError('Google did not return an access token')
+    profile = _hub_gmail_api_json('GET', '/users/me/profile', access_token)
+    email_address = str(profile.get('emailAddress') or '').strip()
+    updated = dict(config)
+    updated['transport'] = 'google_oauth'
+    if email_address:
+        updated['google_email'] = email_address
+    updated['google_connected_at'] = _hub_now()
+    return updated, email_address
+
+
 def _hub_contact_name_from_raw(raw_contact):
     if not isinstance(raw_contact, dict):
         return ''
@@ -1206,18 +1487,28 @@ def _hub_touch_connector(conn, connector_id, **updates):
 
 @_hub_register_syncer('quo')
 def _hub_sync_quo_local(conn, connector):
-    limit = int((_json_load(connector['config'], {}) or {}).get('limit', 250) or 250)
-    rows = conn.execute(
-        '''
+    config = _json_load(connector['config'], {}) or {}
+    try:
+        limit = int(config.get('limit') or 0)
+    except Exception:
+        limit = 0
+    # Older Quo connectors were seeded with a default cap of 250 messages.
+    # If that cap was never explicitly set by the user, upgrade them to pull
+    # the full cached history so older threads are not silently dropped.
+    if limit == 250 and not bool(config.get('limit_locked')):
+        limit = 0
+    query = '''
         SELECT
             m.*, c.raw AS contact_raw
         FROM messages m
         LEFT JOIN contacts c ON c.phone = m.contact_phone
         ORDER BY COALESCE(m.msg_created, m.synced_at) DESC
-        LIMIT ?
-        ''',
-        (limit,),
-    ).fetchall()
+    '''
+    params = ()
+    if limit > 0:
+        query += '\nLIMIT ?'
+        params = (limit,)
+    rows = conn.execute(query, params).fetchall()
     inserted = 0
     for row in rows:
         raw_message = _json_load(row['raw'], {})
@@ -1278,15 +1569,79 @@ def _hub_sync_quo_local(conn, connector):
 @_hub_register_syncer('gmail')
 def _hub_sync_gmail_imap(conn, connector):
     config = _json_load(connector['config'], {})
+    transport = _hub_effective_gmail_transport(config)
+    mailbox = str(config.get('mailbox') or 'INBOX').strip() or 'INBOX'
+    max_messages = max(1, min(500, int(config.get('max_messages') or 100)))
+    if transport == 'google_oauth':
+        access_token = _hub_gmail_refresh_access_token(conn, connector['id'], config)
+        inserted = 0
+        seen = 0
+        page_token = ''
+        while True:
+            listing = _hub_gmail_api_json('GET', '/users/me/messages', access_token, _hub_gmail_list_params(config, page_token))
+            for item in listing.get('messages') or []:
+                if seen >= max_messages:
+                    break
+                message_ref = _hub_gmail_api_json(
+                    'GET',
+                    f'/users/me/messages/{item.get("id")}',
+                    access_token,
+                    {'format': 'full'},
+                )
+                payload = message_ref.get('payload') if isinstance(message_ref, dict) else {}
+                headers = _hub_gmail_headers(payload or {})
+                subject = headers.get('subject') or 'Gmail message'
+                sender_name, sender_addr = parseaddr(headers.get('from', ''))
+                sender = sender_name or sender_addr or str(config.get('google_email') or 'Gmail sender')
+                body = _hub_gmail_extract_payload_text(payload or {})
+                preview = body[:180] or str(message_ref.get('snippet') or '')[:180] or subject[:180]
+                received_at = _hub_parse_datetime(headers.get('date') or '')
+                location_tag, confidence, reason = _hub_classify_location(' '.join([subject, sender, body]), {
+                    'booking_location': body,
+                    'source': 'gmail',
+                })
+                message_id = headers.get('message-id') or f'gmail:{connector["id"]}:{item.get("id")}'
+                thread_id = message_ref.get('threadId') or message_id
+                message = {
+                    'id': f'gmail:{connector["id"]}:{item.get("id")}',
+                    'connector_id': connector['id'],
+                    'source': 'Gmail',
+                    'sender': sender,
+                    'subject': subject,
+                    'preview': preview,
+                    'body': body or preview,
+                    'received_at': received_at,
+                    'location_tag': location_tag,
+                    'location_reason': reason,
+                    'status': 'needs_review',
+                    'confidence': confidence,
+                    'thread_id': str(thread_id),
+                    'raw': {
+                        'source': 'gmail_api',
+                        'gmail_id': item.get('id'),
+                        'mailbox': mailbox,
+                        'headers': headers,
+                        'snippet': message_ref.get('snippet') or '',
+                        'message_id': message_id,
+                    },
+                }
+                if _hub_store_message(conn, message):
+                    inserted += 1
+                seen += 1
+            if seen >= max_messages:
+                break
+            page_token = str(listing.get('nextPageToken') or '').strip()
+            if not page_token:
+                break
+        return inserted
+
     host = str(config.get('host') or 'imap.gmail.com').strip()
     port = int(config.get('port') or 993)
     use_ssl = bool(config.get('ssl', True))
-    mailbox = str(config.get('mailbox') or 'INBOX').strip() or 'INBOX'
     username = str(config.get('username') or '').strip()
     password = str(config.get('password') or '').strip()
-    max_messages = int(config.get('max_messages') or 100)
     if not username or not password:
-        raise ValueError('Gmail connector requires username and password or app password')
+        raise ValueError('Gmail connector requires either Google login or IMAP credentials')
     client = imaplib.IMAP4_SSL(host, port) if use_ssl else imaplib.IMAP4(host, port)
     try:
         client.login(username, password)
@@ -1335,7 +1690,7 @@ def _hub_sync_gmail_imap(conn, connector):
                 'confidence': confidence,
                 'thread_id': str(thread_id),
                 'raw': {
-                    'source': 'gmail',
+                    'source': 'gmail_imap',
                     'uid': uid.decode(errors='ignore'),
                     'mailbox': mailbox,
                     'headers': {k: _hub_decode_header(v) for k, v in msg.items()},
@@ -1593,31 +1948,59 @@ def _hub_describe_connector_setup(connector):
     missing = []
 
     if kind == 'gmail':
-        username = str(config.get('username') or '').strip()
-        password = str(config.get('password') or '').strip()
+        transport = _hub_effective_gmail_transport(config)
         mailbox = str(config.get('mailbox') or 'INBOX').strip() or 'INBOX'
-        host = str(config.get('host') or 'imap.gmail.com').strip() or 'imap.gmail.com'
-        if username:
-            details.append(f'Username saved: {username}')
-        else:
-            missing.append('Gmail username')
-        if password:
-            details.append(f'App password saved: {_hub_mask_secret(password)}')
-        else:
-            missing.append('Gmail app password')
+        max_messages = max(1, min(500, int(config.get('max_messages') or 100)))
         details.append(f'Mailbox: {mailbox}')
-        details.append(f'Host: {host}:{int(config.get("port") or 993)}')
-        if missing:
-            summary = f'Missing {", ".join(missing)}'
-            readiness = 'needs_setup'
+        details.append(f'Max messages per sync: {max_messages}')
+        if transport == 'google_oauth':
+            google_client_id = str(config.get('google_client_id') or '').strip()
+            google_email = str(config.get('google_email') or '').strip()
+            with get_db() as secrets_conn:
+                client_secret_saved = bool(_hub_connector_secret_get(secrets_conn, connector.get('id', ''), 'google_client_secret'))
+                refresh_saved = bool(_hub_connector_secret_get(secrets_conn, connector.get('id', ''), 'google_refresh_token'))
+            details.append('Connection mode: Google login')
+            if google_client_id:
+                details.append(f'Google client ID saved: {google_client_id}')
+            else:
+                missing.append('Google client ID')
+            if client_secret_saved:
+                details.append('Google client secret saved on the server')
+            else:
+                missing.append('Google client secret')
+            if google_email:
+                details.append(f'Connected Google account: {google_email}')
+            if refresh_saved:
+                details.append('Google refresh token saved on the server')
+                summary = 'Ready for Gmail API sync'
+                readiness = 'ready'
+            else:
+                summary = 'Save the OAuth client, then connect this Gmail account with Google login'
+                readiness = 'needs_setup' if missing else 'action_required'
         else:
-            summary = 'Ready for a live IMAP login test'
-            readiness = 'ready'
+            username = str(config.get('username') or '').strip()
+            password = str(config.get('password') or '').strip()
+            host = str(config.get('host') or 'imap.gmail.com').strip() or 'imap.gmail.com'
+            if username:
+                details.append(f'Username saved: {username}')
+            else:
+                missing.append('Gmail username')
+            if password:
+                details.append(f'App password saved: {_hub_mask_secret(password)}')
+            else:
+                missing.append('Gmail app password')
+            details.append(f'Host: {host}:{int(config.get("port") or 993)}')
+            if missing:
+                summary = f'Missing {", ".join(missing)}'
+                readiness = 'needs_setup'
+            else:
+                summary = 'Ready for a live IMAP login test'
+                readiness = 'ready'
     elif kind == 'quo':
         mode = str(config.get('mode') or 'local_db').strip() or 'local_db'
-        limit = int(config.get('limit') or 250)
+        limit = int(config.get('limit') or 0)
         details.append(f'Mode: {mode}')
-        details.append(f'Import limit: {limit}')
+        details.append(f'Import limit: {"All cached messages" if limit <= 0 else limit}')
         if mode == 'api':
             api_key = str(config.get('api_key') or _credential_get_any('quo_api_key')).strip()
             if api_key:
@@ -1696,7 +2079,7 @@ def _hub_validate_connector(conn, connector):
     kind = _hub_canonical_connector_kind(connector.get('kind') or '')
     config = connector.get('config') if isinstance(connector.get('config'), dict) else {}
     setup = _hub_describe_connector_setup(connector)
-    if setup['readiness'] != 'ready':
+    if setup['readiness'] not in ('ready',):
         _hub_touch_connector(
             conn,
             connector['id'],
@@ -1714,11 +2097,42 @@ def _hub_validate_connector(conn, connector):
         }
 
     if kind == 'gmail':
+        mailbox = str(config.get('mailbox') or 'INBOX').strip() or 'INBOX'
+        if _hub_effective_gmail_transport(config) == 'google_oauth':
+            access_token = _hub_gmail_refresh_access_token(conn, connector['id'], config)
+            profile = _hub_gmail_api_json('GET', '/users/me/profile', access_token)
+            email_address = str(profile.get('emailAddress') or '').strip()
+            listing = _hub_gmail_api_json('GET', '/users/me/messages', access_token, _hub_gmail_list_params(config))
+            visible_count = len(listing.get('messages') or [])
+            updated_config = dict(config)
+            if email_address:
+                updated_config['google_email'] = email_address
+            updated_config['google_connected_at'] = updated_config.get('google_connected_at') or _hub_now()
+            _hub_touch_connector(
+                conn,
+                connector['id'],
+                status='connected',
+                last_error='',
+                last_sync=_hub_now(),
+                config=updated_config,
+            )
+            return {
+                'ok': True,
+                'mode': 'live',
+                'status': 'connected',
+                'summary': f'Connected to Gmail as {email_address or "your Google account"}',
+                'details': [
+                    f'Google account: {email_address or "Connected"}',
+                    f'Mailbox query: {mailbox}',
+                    f'Fetched {visible_count} Gmail message reference(s) during the test',
+                ],
+                'missing': [],
+            }
+
         host = str(config.get('host') or 'imap.gmail.com').strip() or 'imap.gmail.com'
         port = int(config.get('port') or 993)
         username = str(config.get('username') or '').strip()
         password = str(config.get('password') or '').strip()
-        mailbox = str(config.get('mailbox') or 'INBOX').strip() or 'INBOX'
         use_ssl = config.get('ssl', True) is not False
         client = None
         try:
@@ -2369,9 +2783,9 @@ def hub_connectors():
         kind = _hub_canonical_connector_kind(payload.get('kind', 'webhook')) or 'webhook'
         profile = _hub_profile(kind)
         connector_id = str(payload.get('id', '')).strip() or re.sub(r'[^a-z0-9_-]+', '-', name.lower()).strip('-') or f'custom-{int(time.time())}'
-        config = payload.get('config')
-        if not isinstance(config, dict):
-            config = dict(profile.get('default_config') or {})
+        incoming_config = payload.get('config')
+        if not isinstance(incoming_config, dict):
+            incoming_config = dict(profile.get('default_config') or {})
         enabled = 1 if payload.get('enabled', True) else 0
         status = str(payload.get('status', 'needs_setup' if not profile.get('sync_supported') else 'ready')).strip() or 'ready'
         if not name:
@@ -2379,6 +2793,7 @@ def hub_connectors():
         existing = conn.execute('SELECT 1 FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
         if existing:
             return jsonify({'error': 'Connector id already exists'}), 409
+        config = _hub_prepare_connector_config(conn, connector_id, kind, incoming_config, {})
         conn.execute(
             '''
             INSERT INTO hub_connectors (id, name, kind, enabled, status, message_count, last_sync, last_error, config, updated_at)
@@ -2398,6 +2813,11 @@ def hub_connector_update(connector_id):
     allowed = {'name', 'kind', 'status', 'last_sync'}
     with get_db() as conn:
         _hub_seed_if_needed(conn)
+        existing_row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
+        if not existing_row:
+            return jsonify({'error': 'Connector not found'}), 404
+        existing_config = _json_load(existing_row['config'], {})
+        next_kind = _hub_canonical_connector_kind(payload.get('kind', existing_row['kind']))
         if 'enabled' in payload:
             updates.append('enabled = ?')
             params.append(1 if payload.get('enabled') else 0)
@@ -2410,8 +2830,9 @@ def hub_connector_update(connector_id):
                 updates.append(f'{key} = ?')
                 params.append(str(payload.get(key, '')).strip())
         if 'config' in payload:
+            merged_config = _hub_prepare_connector_config(conn, connector_id, next_kind, payload.get('config', {}), existing_config)
             updates.append('config = ?')
-            params.append(_json_dump(payload.get('config', {})))
+            params.append(_json_dump(merged_config))
         if 'last_error' in payload:
             updates.append('last_error = ?')
             params.append(str(payload.get('last_error', '')).strip())
@@ -2424,10 +2845,94 @@ def hub_connector_update(connector_id):
             f'UPDATE hub_connectors SET {", ".join(updates)} WHERE id = ?',
             params,
         )
-        if cur.rowcount == 0:
-            return jsonify({'error': 'Connector not found'}), 404
         row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
         return jsonify({'ok': True, 'data': _hub_connector_row(row)})
+
+
+@app.route('/hub/api/connectors/<connector_id>/gmail/oauth/start')
+def hub_gmail_oauth_start(connector_id):
+    return_to = str(request.args.get('return_to') or '/hub').strip() or '/hub'
+    with get_db() as conn:
+        _hub_seed_if_needed(conn)
+        row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
+        if not row:
+            return jsonify({'error': 'Connector not found'}), 404
+        connector = _hub_connector_row(row)
+        if connector.get('kind') != 'gmail':
+            return jsonify({'error': 'Google login is only available for Gmail connectors'}), 400
+        config = connector.get('config') if isinstance(connector.get('config'), dict) else {}
+        client_id = str(config.get('google_client_id') or '').strip()
+        client_secret = _hub_connector_secret_get(conn, connector_id, 'google_client_secret')
+        if not client_id or not client_secret:
+            return jsonify({'error': 'Save the Google client ID and client secret on this Gmail connector first'}), 400
+        state = _hub_issue_gmail_oauth_state(connector_id, return_to)
+        params = {
+            'client_id': client_id,
+            'redirect_uri': _hub_gmail_redirect_uri(),
+            'response_type': 'code',
+            'scope': GMAIL_OAUTH_SCOPE,
+            'access_type': 'offline',
+            'prompt': 'consent',
+            'include_granted_scopes': 'true',
+            'state': state,
+        }
+        return redirect(f'{GMAIL_OAUTH_AUTHORIZE_URL}?{urlencode(params)}')
+
+
+@app.route('/hub/api/gmail/oauth/callback')
+def hub_gmail_oauth_callback():
+    error = str(request.args.get('error') or '').strip()
+    code = str(request.args.get('code') or '').strip()
+    state = str(request.args.get('state') or '').strip()
+    state_payload = _hub_consume_gmail_oauth_state(state)
+    if not state_payload:
+        return 'This Gmail login link expired or is invalid. Please try connecting Gmail again from Message Hub.', 400
+    connector_id = state_payload['connector_id']
+    return_to = state_payload.get('return_to') or '/hub'
+    if error:
+        with get_db() as conn:
+            _hub_touch_connector(conn, connector_id, status='needs_setup', last_error=f'Google login was not completed: {error}', last_sync=_hub_now())
+        return redirect(return_to)
+    if not code:
+        return 'Google did not return an authorization code.', 400
+    with get_db() as conn:
+        row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
+        if not row:
+            return 'Gmail connector not found.', 404
+        connector = _hub_connector_row(row)
+        config = connector.get('config') if isinstance(connector.get('config'), dict) else {}
+        client_id = str(config.get('google_client_id') or '').strip()
+        client_secret = _hub_connector_secret_get(conn, connector_id, 'google_client_secret')
+        if not client_id or not client_secret:
+            return 'Google client credentials are missing from this Gmail connector.', 400
+        token_response = requests.post(
+            GMAIL_OAUTH_TOKEN_URL,
+            data={
+                'code': code,
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'redirect_uri': _hub_gmail_redirect_uri(),
+                'grant_type': 'authorization_code',
+            },
+            timeout=20,
+        )
+        token_data = token_response.json() if token_response.content else {}
+        if token_response.status_code >= 400:
+            error_message = ''
+            if isinstance(token_data, dict):
+                error_message = token_data.get('error_description') or token_data.get('error') or ''
+            _hub_touch_connector(conn, connector_id, status='error', last_error=error_message or 'Google token exchange failed', last_sync=_hub_now())
+            return redirect(return_to)
+        updated_config, email_address = _hub_gmail_finalize_oauth(conn, connector_id, config, token_data)
+        _hub_touch_connector(
+            conn,
+            connector_id,
+            status='connected',
+            last_error='',
+            last_sync=_hub_now(),
+            config=updated_config,
+        )
+    return redirect(return_to)
 
 
 @app.route('/hub/api/connectors/<connector_id>/test', methods=['POST'])

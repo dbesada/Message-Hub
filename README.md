@@ -16,7 +16,7 @@ The current product combines:
 - Supports manual review when a location is ambiguous
 - Stores connector configuration and API credentials in SQLite on the server
 - Exposes webhook ingest routes for supported connectors
-- Supports pull-based sync for connectors such as Gmail IMAP and the local Quo cache
+- Supports pull-based sync for connectors such as Gmail via Google login and the local Quo cache
 - Lets you test saved connector setup from the hub so missing account details are easier to spot
 - Opens directly without an app-level login gate
 
@@ -27,7 +27,8 @@ The app is structured around a connector registry so new sources can be added wi
 Current connector types in the codebase:
 
 - Gmail
-  - IMAP sync
+  - Google login + Gmail API sync
+  - IMAP app-password fallback for legacy setups
 - Quo
   - local DB sync today
   - API-oriented settings are already represented in the UI
@@ -64,6 +65,10 @@ The original Quo-oriented operational UI:
 ## Credential Storage
 
 The app intentionally saves credentials server-side in SQLite so they can be reused by sync jobs and webhook flows.
+
+For Gmail auto-login, create a Google OAuth web client and add this callback URL on your Message Hub domain:
+
+- `/hub/api/gmail/oauth/callback`
 
 Examples already supported in code:
 
