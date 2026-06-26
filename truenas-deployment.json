@@ -2,7 +2,7 @@
   "host": "192.168.50.230",
   "url": "http://nasbesada.tail0731b8.ts.net:3000",
   "app_name": "message-hub",
-  "image": "ghcr.io/dbesada/message-hub:1.12.7",
+  "image": "ghcr.io/dbesada/message-hub:1.12.8",
   "dataset": "pool0/apps/message-hub",
   "host_path": "/mnt/pool0/apps/message-hub",
   "node_port": 3000,
@@ -10,5 +10,5 @@
   "rate_burst": 1,
   "sync_workers": 8,
   "verify_workers": 8,
-  "version": "1.12.7"
+  "version": "1.12.8"
 }

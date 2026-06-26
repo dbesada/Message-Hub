@@ -147,13 +147,17 @@ Relevant files:
 - [`scripts/release-version.ps1`](scripts/release-version.ps1)
 - [`TRUENAS_CUSTOM_APP.md`](TRUENAS_CUSTOM_APP.md)
 
-For Tailscale-hosted TrueNAS deploys, the release workflow now prefers:
+For Tailscale-hosted TrueNAS deploys, the release workflow supports:
 
 - `TS_OAUTH_CLIENT_ID`
 - `TS_OAUTH_SECRET`
-- optional repo variable `TAILSCALE_TAGS` (defaults to `tag:ci`)
+- optional repo variable `TAILSCALE_TAGS`
+- optional repo variable `TAILSCALE_AUTH_MODE`
+  - `auto` by default
+  - `authkey` is preferred automatically when both auth methods exist
+  - `oauth` is available once your tailnet permits the tag you choose
 
-`TAILSCALE_AUTHKEY` still works as a fallback, but Tailscale now recommends OAuth clients for GitHub Actions.
+`TAILSCALE_AUTHKEY` remains the safest compatibility path for unattended deploys. When you switch to OAuth, use a permitted lowercase tag such as `tag:codex`.
 
 ## Project Layout
 

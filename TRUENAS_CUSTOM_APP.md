@@ -118,21 +118,25 @@ Optional variables:
   - only set this when you intentionally want to override the current mounted data path
 - `TRUENAS_PRESERVE_DATA_PATH`
   - default behavior is to preserve the app's current data mount
+- `TAILSCALE_AUTH_MODE`
+  - optional: `auto`, `authkey`, or `oauth`
+  - default: `auto`
+  - `auto` currently prefers `TAILSCALE_AUTHKEY` when both auth paths are configured so unattended deploys keep working while OAuth tags are being prepared
 
 Optional secret:
 
 - `TS_OAUTH_CLIENT_ID`
 - `TS_OAUTH_SECRET`
-  - preferred for GitHub Actions when `TRUENAS_HOST` is a Tailscale `.ts.net` hostname
-  - the Tailscale OAuth client should have writable `auth_keys` scope and at least one tag
+  - preferred long-term for GitHub Actions when `TRUENAS_HOST` is a Tailscale `.ts.net` hostname
+  - the Tailscale OAuth client should have writable `auth_keys` scope and at least one permitted tag
 - `TAILSCALE_AUTHKEY`
-  - legacy fallback if you have not migrated to the OAuth client flow yet
+  - currently the safest compatibility path if your OAuth tag policy is not ready yet
 
 Optional variable:
 
 - `TAILSCALE_TAGS`
-  - default: `tag:ci`
   - only used by the OAuth client flow
+  - use permitted lowercase tags such as `tag:codex`
 
 For a first cutover from the old `quo-manager` app, keeping `TRUENAS_APP_ID=quo-manager` is the safest path.
 That preserves the live app identity and, by default, preserves the current data mount too.
@@ -207,13 +211,13 @@ Recommended options:
 
 Tailscale is the cleanest first step if this is only for your own computers.
 
-For GitHub Actions deploys that target a Tailscale hostname, the repo now prefers Tailscale's supported OAuth client inputs:
+For GitHub Actions deploys that target a Tailscale hostname, the repo supports Tailscale's OAuth client inputs:
 
 - `TS_OAUTH_CLIENT_ID`
 - `TS_OAUTH_SECRET`
 - `TAILSCALE_TAGS`
 
-`TAILSCALE_AUTHKEY` still works as a fallback, but Tailscale marks that input as deprecated for this GitHub Action path.
+`TAILSCALE_AUTHKEY` is still wired in because it remains the most reliable unattended path until the tailnet tag policy is confirmed. If you want to force OAuth after that, set `TAILSCALE_AUTH_MODE=oauth`.
 
 ## If You Want to Keep the Private TrueNAS Registry
 

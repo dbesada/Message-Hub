@@ -42,6 +42,14 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
+        'version': '1.12.8',
+        'date':    '2026-06-26',
+        'features': [
+            'TrueNAS release deploys now support an explicit Tailscale auth mode and default to the more compatible auth key path in auto mode',
+            'OAuth-based Tailscale deploy guidance now calls out lowercase permitted tags such as tag:codex so GitHub Actions failures are easier to diagnose',
+        ],
+    },
+    {
         'version': '1.12.7',
         'date':    '2026-06-26',
         'features': [
