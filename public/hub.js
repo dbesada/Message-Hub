@@ -847,6 +847,47 @@ async function patchConnector(connectorId, payload) {
   return response.json();
 }
 
+function startGmailOAuthPopup(connectorId) {
+  const popupUrl = `/hub/api/connectors/${encodeURIComponent(connectorId)}/gmail/oauth/start?return_to=${encodeURIComponent('/hub')}&popup=1`;
+  const width = 560;
+  const height = 760;
+  const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
+  const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
+  const popup = window.open(
+    popupUrl,
+    'message-hub-gmail-oauth',
+    `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+  );
+  if (!popup) {
+    window.location.href = `/hub/api/connectors/${encodeURIComponent(connectorId)}/gmail/oauth/start?return_to=${encodeURIComponent('/hub')}`;
+    return null;
+  }
+  popup.focus();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      settled = true;
+      window.removeEventListener('message', handleMessage);
+      window.clearInterval(closePoll);
+    };
+    const handleMessage = (event) => {
+      if (event.origin !== window.location.origin) return;
+      const payload = event.data || {};
+      if (payload.type !== 'hub:gmail-oauth' || payload.connectorId !== connectorId) return;
+      cleanup();
+      resolve(payload);
+    };
+    const closePoll = window.setInterval(() => {
+      if (settled) return;
+      if (popup.closed) {
+        cleanup();
+        reject(new Error('Google login popup was closed before the connection finished.'));
+      }
+    }, 400);
+    window.addEventListener('message', handleMessage);
+  });
+}
+
 async function deleteConnector(connectorId) {
   const response = await fetch(`/hub/api/connectors/${encodeURIComponent(connectorId)}`, {
     method: 'DELETE',
@@ -974,7 +1015,13 @@ async function submitConnectorForm(event) {
   await loadBootstrap({ preserveSelection: true });
   const savedConnector = body.data || state.connectors.find((item) => item.id === connectorId) || null;
   if (savedConnector?.kind === 'gmail' && payload.config.transport === 'google_oauth' && payload.config.google_client_id && !savedConnector?.config?.google_email) {
-    window.location.href = `/hub/api/connectors/${encodeURIComponent(savedConnector.id)}/gmail/oauth/start?return_to=${encodeURIComponent('/hub')}`;
+    const authResult = await startGmailOAuthPopup(savedConnector.id);
+    if (!authResult) return;
+    await loadBootstrap({ preserveSelection: true });
+    if (!authResult.ok) {
+      throw new Error(authResult.message || 'Google login was not completed.');
+    }
+    closeModal();
     return;
   }
   els.connectorForm.reset();
@@ -1049,9 +1096,20 @@ function bindEvents() {
   els.connectorKind.addEventListener('change', () => {
     refreshConnectorModal(els.connectorKind.value);
   });
-  els.connectGmailBtn.addEventListener('click', () => {
+  els.connectGmailBtn.addEventListener('click', async () => {
     if (!state.editingConnectorId) return;
-    window.location.href = `/hub/api/connectors/${encodeURIComponent(state.editingConnectorId)}/gmail/oauth/start?return_to=${encodeURIComponent('/hub')}`;
+    try {
+      const authResult = await startGmailOAuthPopup(state.editingConnectorId);
+      if (!authResult) return;
+      await loadBootstrap({ preserveSelection: true });
+      const refreshed = state.connectors.find((item) => item.id === state.editingConnectorId);
+      if (refreshed) fillConnectorForm(refreshed);
+      if (!authResult.ok) {
+        alert(authResult.message || 'Google login was not completed.');
+      }
+    } catch (error) {
+      alert(error.message);
+    }
   });
   els.testConnectorBtn.addEventListener('click', async () => {
     if (!state.editingConnectorId) return;

@@ -17,6 +17,8 @@ The current product combines:
 - Stores connector configuration and API credentials in SQLite on the server
 - Exposes webhook ingest routes for supported connectors
 - Supports pull-based sync for connectors such as Gmail via Google login and the local Quo cache
+- Supports popup-based Google login for Gmail so connector auth can complete without leaving the hub
+- Syncs Quo API-mode connectors from live conversations and messages instead of relying only on the older local cache
 - Lets you test saved connector setup from the hub so missing account details are easier to spot
 - Lets you edit or remove connectors directly from the hub
 - Exposes inbox layout, refresh cadence, reply signature, and source display settings in the UI

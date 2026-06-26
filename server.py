@@ -509,12 +509,13 @@ def _hub_prune_gmail_oauth_states():
             HUB_GMAIL_OAUTH_STATES.pop(state, None)
 
 
-def _hub_issue_gmail_oauth_state(connector_id, return_to='/hub'):
+def _hub_issue_gmail_oauth_state(connector_id, return_to='/hub', popup=False):
     _hub_prune_gmail_oauth_states()
     state = secrets.token_urlsafe(24)
     HUB_GMAIL_OAUTH_STATES[state] = {
         'connector_id': connector_id,
         'return_to': return_to or '/hub',
+        'popup': bool(popup),
         'expires_at': time.time() + HUB_OAUTH_STATE_TTL_SECONDS,
     }
     return state
@@ -1035,8 +1036,14 @@ def _hub_set_settings(conn, updates):
 
 def _hub_effective_gmail_transport(config):
     transport = str((config or {}).get('transport') or '').strip().lower()
-    if transport in ('google_oauth', 'imap'):
-        return transport
+    aliases = {
+        'google_oauth': 'google_oauth',
+        'gmail_api': 'google_oauth',
+        'oauth': 'google_oauth',
+        'imap': 'imap',
+    }
+    if transport in aliases:
+        return aliases[transport]
     if str((config or {}).get('username') or '').strip() or str((config or {}).get('password') or '').strip():
         return 'imap'
     return 'google_oauth'
@@ -1441,6 +1448,231 @@ def _hub_gmail_finalize_oauth(conn, connector_id, config, token_data):
     return updated, email_address
 
 
+def _hub_gmail_popup_page(ok, connector_id='', message='', email_address='', return_to='/hub'):
+    payload = {
+        'type': 'hub:gmail-oauth',
+        'ok': bool(ok),
+        'connectorId': str(connector_id or '').strip(),
+        'message': str(message or '').strip(),
+        'email': str(email_address or '').strip(),
+        'returnTo': str(return_to or '/hub').strip() or '/hub',
+    }
+    title = 'Gmail connected' if ok else 'Gmail login not completed'
+    summary = payload['message'] or ('Your Gmail account is now connected.' if ok else 'Google login was not completed.')
+    return f'''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{
+      margin: 0;
+      font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+      background: #f7f1e8;
+      color: #1f1a16;
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+      padding: 24px;
+    }}
+    .card {{
+      width: min(460px, 100%);
+      background: rgba(255,255,255,.94);
+      border: 1px solid rgba(74, 54, 32, .12);
+      border-radius: 24px;
+      box-shadow: 0 24px 60px rgba(48, 28, 12, .14);
+      padding: 24px;
+    }}
+    h1 {{
+      margin: 0 0 10px;
+      font-size: 24px;
+      letter-spacing: -.04em;
+    }}
+    p {{
+      margin: 0 0 14px;
+      line-height: 1.55;
+      color: #6f655d;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>{html.escape(title)}</h1>
+    <p>{html.escape(summary)}</p>
+    <p>You can close this window if it does not close automatically.</p>
+  </div>
+  <script>
+    const payload = {json.dumps(payload)};
+    try {{
+      if (window.opener && !window.opener.closed) {{
+        window.opener.postMessage(payload, window.location.origin);
+      }}
+    }} catch (error) {{
+      console.error(error);
+    }}
+    window.setTimeout(() => window.close(), 150);
+    window.setTimeout(() => {{
+      window.location.replace(payload.returnTo || '/hub');
+    }}, 1200);
+  </script>
+</body>
+</html>'''
+
+
+def _hub_quo_contact_lookup(conn, phone):
+    phone = str(phone or '').strip()
+    if not phone:
+        return {}
+    row = conn.execute(
+        '''
+        SELECT raw FROM contacts
+        WHERE phone = ?
+        ORDER BY synced_at DESC, quo_updated DESC, quo_created DESC
+        LIMIT 1
+        ''',
+        (phone,),
+    ).fetchone()
+    return _json_load(row['raw'], {}) if row and row['raw'] else {}
+
+
+def _hub_store_quo_message(conn, connector, raw_message, raw_contact=None, contact_phone='', phone_number_id='',
+                           body_override='', received_at_override=''):
+    raw_message = raw_message if isinstance(raw_message, dict) else {}
+    raw_contact = raw_contact if isinstance(raw_contact, dict) else {}
+    raw_id = str(raw_message.get('id') or '').strip()
+    if not raw_id:
+        return False
+    contact_phone = str(contact_phone or _message_participant_phone(raw_message)).strip()
+    phone_number_id = str(phone_number_id or raw_message.get('phoneNumberId') or '').strip()
+    sender = (
+        _hub_contact_name_from_raw(raw_contact)
+        or str(raw_message.get('sender') or raw_message.get('from') or contact_phone).strip()
+        or contact_phone
+        or 'Quo contact'
+    )
+    body = str(body_override or raw_message.get('text') or raw_message.get('content') or '').strip()
+    preview = body[:180]
+    subject = 'Text message'
+    if body:
+        subject = body[:72] if len(body) <= 72 else f'{body[:69]}...'
+    received_at = received_at_override or raw_message.get('createdAt') or raw_message.get('updatedAt') or _hub_now()
+    direction = str(raw_message.get('direction') or '').strip().lower()
+    status = 'needs_review' if direction in ('in', 'inbound', 'incoming', '') else 'done'
+    blob = ' '.join(filter(None, [subject, preview, body, sender]))
+    location_tag, confidence, reason = _hub_classify_location(blob, raw_message)
+    thread_id = str(raw_message.get('conversationId') or '').strip() or ':'.join(filter(None, [phone_number_id, contact_phone]))
+    message = {
+        'id': f'quo-local:{raw_id}',
+        'connector_id': connector['id'],
+        'source': 'Quo',
+        'sender': sender,
+        'subject': subject,
+        'preview': preview,
+        'body': body,
+        'received_at': received_at,
+        'location_tag': location_tag,
+        'location_reason': reason,
+        'status': status,
+        'confidence': confidence,
+        'thread_id': thread_id or f'quo-local:{raw_id}',
+        'raw': {
+            'source': 'quo-local',
+            'message': raw_message,
+            'contact': raw_contact,
+            'direction': raw_message.get('direction'),
+            'contact_phone': contact_phone,
+            'phone_number_id': phone_number_id,
+            'status': raw_message.get('status'),
+            'from_number': raw_message.get('from'),
+            'to_numbers': raw_message.get('to') if isinstance(raw_message.get('to'), list) else [raw_message.get('to')] if raw_message.get('to') else [],
+            'user_id': raw_message.get('userId'),
+            'msg_created': raw_message.get('createdAt'),
+            'msg_updated': raw_message.get('updatedAt'),
+            'conversation_id': raw_message.get('conversationId'),
+        },
+    }
+    return _hub_store_message(conn, message)
+
+
+def _hub_sync_quo_api(conn, connector, config):
+    api_key = str(config.get('api_key') or _credential_get_any('quo_api_key')).strip()
+    if not api_key:
+        raise ValueError('Quo API mode requires an API key')
+    try:
+        limit = int(config.get('limit') or 0)
+    except Exception:
+        limit = 0
+    inserted = 0
+    synced_messages = 0
+    seen_message_ids = set()
+    page_token = ''
+    while True:
+        convo_params = {'maxResults': 50}
+        if page_token:
+            convo_params['pageToken'] = page_token
+        listing, status = quo_request(api_key, 'GET', '/conversations', params=convo_params)
+        if status not in (200, 201):
+            detail = listing.get('error') if isinstance(listing, dict) else listing
+            raise ValueError(f'Quo conversations request failed ({status}): {detail}')
+        conversations = listing.get('data') if isinstance(listing, dict) else []
+        if not isinstance(conversations, list) or not conversations:
+            break
+        for conversation in conversations:
+            phone_number_id = str(conversation.get('phoneNumberId') or '').strip()
+            participants = [
+                str(item).strip()
+                for item in (conversation.get('participants') if isinstance(conversation.get('participants'), list) else [])
+                if str(item).strip()
+            ]
+            if not phone_number_id or not participants:
+                continue
+            message_page_token = ''
+            while True:
+                msg_params = {
+                    'phoneNumberId': phone_number_id,
+                    'maxResults': 50,
+                    'participants': participants,
+                }
+                if message_page_token:
+                    msg_params['pageToken'] = message_page_token
+                messages_payload, message_status = quo_request(api_key, 'GET', '/messages', params=msg_params)
+                if message_status not in (200, 201):
+                    break
+                messages = messages_payload.get('data') if isinstance(messages_payload, dict) else []
+                if not isinstance(messages, list) or not messages:
+                    break
+                for raw_message in messages:
+                    raw_id = str((raw_message or {}).get('id') or '').strip()
+                    if not raw_id or raw_id in seen_message_ids:
+                        continue
+                    seen_message_ids.add(raw_id)
+                    contact_phone = str(_message_participant_phone(raw_message) or participants[0]).strip()
+                    raw_contact = _hub_quo_contact_lookup(conn, contact_phone)
+                    _cache_message(conn, raw_message, contact_phone, phone_number_id)
+                    if _hub_store_quo_message(
+                        conn,
+                        connector,
+                        raw_message,
+                        raw_contact=raw_contact,
+                        contact_phone=contact_phone,
+                        phone_number_id=phone_number_id,
+                    ):
+                        inserted += 1
+                    synced_messages += 1
+                    if limit > 0 and synced_messages >= limit:
+                        return inserted
+                message_page_token = str(messages_payload.get('nextPageToken') or '').strip() if isinstance(messages_payload, dict) else ''
+                if not message_page_token:
+                    break
+            if limit > 0 and synced_messages >= limit:
+                return inserted
+        page_token = str(listing.get('nextPageToken') or '').strip() if isinstance(listing, dict) else ''
+        if not page_token:
+            break
+    return inserted
+
+
 def _hub_contact_name_from_raw(raw_contact):
     if not isinstance(raw_contact, dict):
         return ''
@@ -1556,6 +1788,9 @@ def _hub_touch_connector(conn, connector_id, **updates):
 @_hub_register_syncer('quo')
 def _hub_sync_quo_local(conn, connector):
     config = _json_load(connector['config'], {}) or {}
+    mode = str(config.get('mode') or 'local_db').strip() or 'local_db'
+    if mode == 'api':
+        return _hub_sync_quo_api(conn, connector, config)
     try:
         limit = int(config.get('limit') or 0)
     except Exception:
@@ -1570,7 +1805,7 @@ def _hub_sync_quo_local(conn, connector):
             m.*, c.raw AS contact_raw
         FROM messages m
         LEFT JOIN contacts c ON c.phone = m.contact_phone
-        ORDER BY COALESCE(m.msg_created, m.synced_at) DESC
+        ORDER BY COALESCE(m.msg_updated, m.msg_created, m.synced_at) DESC
     '''
     params = ()
     if limit > 0:
@@ -1581,55 +1816,16 @@ def _hub_sync_quo_local(conn, connector):
     for row in rows:
         raw_message = _json_load(row['raw'], {})
         raw_contact = _json_load(row['contact_raw'], {})
-        sender = (
-            _hub_contact_name_from_raw(raw_contact)
-            or str(raw_message.get('sender') or raw_message.get('from') or row['contact_phone'] or row['from_number'] or '').strip()
-            or row['contact_phone']
-            or row['from_number']
-            or 'Quo contact'
-        )
-        content = str(row['content'] or '').strip()
-        body = content or str(raw_message.get('text') or raw_message.get('content') or '').strip()
-        preview = body[:180]
-        subject = 'Text message'
-        if body:
-            subject = body[:72] if len(body) <= 72 else f'{body[:69]}...'
-        received_at = row['msg_created'] or row['synced_at'] or _hub_now()
-        direction = str(row['direction'] or '').strip().lower()
-        status = 'needs_review' if direction in ('in', 'inbound', 'incoming', '') else 'done'
-        blob = ' '.join(filter(None, [subject, preview, body, sender]))
-        location_tag, confidence, reason = _hub_classify_location(blob, raw_message)
-        thread_id = ':'.join(filter(None, [row['phone_number_id'] or '', row['contact_phone'] or '']))
-        message = {
-            'id': f'quo-local:{row["id"]}',
-            'connector_id': connector['id'],
-            'source': 'Quo',
-            'sender': sender,
-            'subject': subject,
-            'preview': preview,
-            'body': body,
-            'received_at': received_at,
-            'location_tag': location_tag,
-            'location_reason': reason,
-            'status': status,
-            'confidence': confidence,
-            'thread_id': thread_id or f'quo-local:{row["id"]}',
-            'raw': {
-                'source': 'quo-local',
-                'message': raw_message,
-                'contact': raw_contact,
-                'direction': row['direction'],
-                'contact_phone': row['contact_phone'],
-                'phone_number_id': row['phone_number_id'],
-                'status': row['status'],
-                'from_number': row['from_number'],
-                'to_numbers': _json_load(row['to_numbers'], []),
-                'user_id': row['user_id'],
-                'msg_created': row['msg_created'],
-                'msg_updated': row['msg_updated'],
-            },
-        }
-        if _hub_store_message(conn, message):
+        if _hub_store_quo_message(
+            conn,
+            connector,
+            raw_message,
+            raw_contact=raw_contact,
+            contact_phone=row['contact_phone'],
+            phone_number_id=row['phone_number_id'],
+            body_override=str(row['content'] or '').strip(),
+            received_at_override=row['msg_created'] or row['msg_updated'] or row['synced_at'] or _hub_now(),
+        ):
             inserted += 1
     return inserted
 
@@ -2952,6 +3148,7 @@ def hub_settings_api():
 @app.route('/hub/api/connectors/<connector_id>/gmail/oauth/start')
 def hub_gmail_oauth_start(connector_id):
     return_to = str(request.args.get('return_to') or '/hub').strip() or '/hub'
+    popup = str(request.args.get('popup') or '').strip().lower() in ('1', 'true', 'yes', 'on')
     with get_db() as conn:
         _hub_seed_if_needed(conn)
         row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
@@ -2965,7 +3162,7 @@ def hub_gmail_oauth_start(connector_id):
         client_secret = _hub_connector_secret_get(conn, connector_id, 'google_client_secret')
         if not client_id or not client_secret:
             return jsonify({'error': 'Save the Google client ID and client secret on this Gmail connector first'}), 400
-        state = _hub_issue_gmail_oauth_state(connector_id, return_to)
+        state = _hub_issue_gmail_oauth_state(connector_id, return_to, popup=popup)
         params = {
             'client_id': client_id,
             'redirect_uri': _hub_gmail_redirect_uri(),
@@ -2989,21 +3186,30 @@ def hub_gmail_oauth_callback():
         return 'This Gmail login link expired or is invalid. Please try connecting Gmail again from Message Hub.', 400
     connector_id = state_payload['connector_id']
     return_to = state_payload.get('return_to') or '/hub'
+    popup = bool(state_payload.get('popup'))
     if error:
         with get_db() as conn:
             _hub_touch_connector(conn, connector_id, status='needs_setup', last_error=f'Google login was not completed: {error}', last_sync=_hub_now())
+        if popup:
+            return _hub_gmail_popup_page(False, connector_id, f'Google login was not completed: {error}', return_to=return_to)
         return redirect(return_to)
     if not code:
+        if popup:
+            return _hub_gmail_popup_page(False, connector_id, 'Google did not return an authorization code.', return_to=return_to)
         return 'Google did not return an authorization code.', 400
     with get_db() as conn:
         row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
         if not row:
+            if popup:
+                return _hub_gmail_popup_page(False, connector_id, 'Gmail connector not found.', return_to=return_to)
             return 'Gmail connector not found.', 404
         connector = _hub_connector_row(row)
         config = connector.get('config') if isinstance(connector.get('config'), dict) else {}
         client_id = str(config.get('google_client_id') or '').strip()
         client_secret = _hub_connector_secret_get(conn, connector_id, 'google_client_secret')
         if not client_id or not client_secret:
+            if popup:
+                return _hub_gmail_popup_page(False, connector_id, 'Google client credentials are missing from this Gmail connector.', return_to=return_to)
             return 'Google client credentials are missing from this Gmail connector.', 400
         token_response = requests.post(
             GMAIL_OAUTH_TOKEN_URL,
@@ -3022,6 +3228,8 @@ def hub_gmail_oauth_callback():
             if isinstance(token_data, dict):
                 error_message = token_data.get('error_description') or token_data.get('error') or ''
             _hub_touch_connector(conn, connector_id, status='error', last_error=error_message or 'Google token exchange failed', last_sync=_hub_now())
+            if popup:
+                return _hub_gmail_popup_page(False, connector_id, error_message or 'Google token exchange failed', return_to=return_to)
             return redirect(return_to)
         updated_config, email_address = _hub_gmail_finalize_oauth(conn, connector_id, config, token_data)
         _hub_touch_connector(
@@ -3032,6 +3240,8 @@ def hub_gmail_oauth_callback():
             last_sync=_hub_now(),
             config=updated_config,
         )
+    if popup:
+        return _hub_gmail_popup_page(True, connector_id, f'Connected Gmail account{f" {email_address}" if email_address else ""}', email_address=email_address, return_to=return_to)
     return redirect(return_to)
 
 
