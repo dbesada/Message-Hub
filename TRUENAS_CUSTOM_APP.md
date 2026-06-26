@@ -119,12 +119,17 @@ Optional variables:
 - `TRUENAS_PRESERVE_DATA_PATH`
   - default behavior is to preserve the app's current data mount
 - `TAILSCALE_AUTH_MODE`
-  - optional: `auto`, `authkey`, or `oauth`
+  - optional: `auto`, `authkey`, `oauth`, or `oidc`
   - default: `auto`
   - `auto` currently prefers `TAILSCALE_AUTHKEY` when both auth paths are configured so unattended deploys keep working while OAuth tags are being prepared
 
 Optional secret:
 
+- `TS_OIDC_CLIENT_ID`
+- `TS_OIDC_AUDIENCE`
+  - used for Tailscale workload identity federation through GitHub Actions OpenID Connect
+  - requires the workflow job to keep `id-token: write`
+  - requires a permitted tag such as `tag:codex`
 - `TS_OAUTH_CLIENT_ID`
 - `TS_OAUTH_SECRET`
   - preferred long-term for GitHub Actions when `TRUENAS_HOST` is a Tailscale `.ts.net` hostname
@@ -213,11 +218,13 @@ Tailscale is the cleanest first step if this is only for your own computers.
 
 For GitHub Actions deploys that target a Tailscale hostname, the repo supports Tailscale's OAuth client inputs:
 
+- `TS_OIDC_CLIENT_ID`
+- `TS_OIDC_AUDIENCE`
 - `TS_OAUTH_CLIENT_ID`
 - `TS_OAUTH_SECRET`
 - `TAILSCALE_TAGS`
 
-`TAILSCALE_AUTHKEY` is still wired in because it remains the most reliable unattended path until the tailnet tag policy is confirmed. If you want to force OAuth after that, set `TAILSCALE_AUTH_MODE=oauth`.
+`TAILSCALE_AUTHKEY` is still wired in because it remains the most reliable unattended path until the OIDC or OAuth path is confirmed. If you want to force workload identity federation after that, set `TAILSCALE_AUTH_MODE=oidc`.
 
 ## If You Want to Keep the Private TrueNAS Registry
 

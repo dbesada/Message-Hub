@@ -106,6 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     env:
       TRUENAS_API_KEY: ${{ secrets.TRUENAS_API_KEY }}
       TRUENAS_HOST: ${{ vars.TRUENAS_HOST }}
@@ -117,6 +118,8 @@ jobs:
       TRUENAS_REGISTRY_NAME: GitHub Container Registry
       TRUENAS_REGISTRY_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
       TRUENAS_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
+      TS_OIDC_CLIENT_ID: ${{ secrets.TS_OIDC_CLIENT_ID }}
+      TS_OIDC_AUDIENCE: ${{ secrets.TS_OIDC_AUDIENCE }}
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
       TAILSCALE_AUTH_MODE: ${{ vars.TAILSCALE_AUTH_MODE }}
@@ -137,9 +140,9 @@ jobs:
         shell: bash
         run: |
           auth_mode="$(printf '%s' "${TAILSCALE_AUTH_MODE:-auto}" | tr '[:upper:]' '[:lower:]')"
-          if [[ "$auth_mode" != "auto" && "$auth_mode" != "authkey" && "$auth_mode" != "oauth" ]]; then
+          if [[ "$auth_mode" != "auto" && "$auth_mode" != "authkey" && "$auth_mode" != "oauth" && "$auth_mode" != "oidc" ]]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping TrueNAS deploy because TAILSCALE_AUTH_MODE must be auto, authkey, or oauth." >> "$GITHUB_STEP_SUMMARY"
+            echo "Skipping TrueNAS deploy because TAILSCALE_AUTH_MODE must be auto, authkey, oauth, or oidc." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if [ -z "${TRUENAS_API_KEY:-}" ]; then
@@ -156,16 +159,31 @@ jobs:
           if [[ "${TRUENAS_HOST:-}" == *.ts.net ]]; then
             echo "needs_tailscale=true" >> "$GITHUB_OUTPUT"
             selected_mode=""
-            if [[ "$auth_mode" == "oauth" ]]; then
+            if [[ "$auth_mode" == "oidc" ]]; then
+              selected_mode="oidc"
+            elif [[ "$auth_mode" == "oauth" ]]; then
               selected_mode="oauth"
             elif [[ "$auth_mode" == "authkey" ]]; then
               selected_mode="authkey"
             elif [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
               selected_mode="authkey"
+            elif [ -n "${TS_OIDC_CLIENT_ID:-}" ] && [ -n "${TS_OIDC_AUDIENCE:-}" ]; then
+              selected_mode="oidc"
             elif [ -n "${TS_OAUTH_CLIENT_ID:-}" ] && [ -n "${TS_OAUTH_SECRET:-}" ]; then
               selected_mode="oauth"
             fi
-            if [[ "$selected_mode" == "oauth" ]]; then
+            if [[ "$selected_mode" == "oidc" ]]; then
+              if [ -z "${TS_OIDC_CLIENT_ID:-}" ] || [ -z "${TS_OIDC_AUDIENCE:-}" ]; then
+                echo "ready=false" >> "$GITHUB_OUTPUT"
+                echo "Skipping TrueNAS deploy because TAILSCALE_AUTH_MODE=oidc but TS_OIDC_CLIENT_ID/TS_OIDC_AUDIENCE are not both configured." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              if [ -z "${TAILSCALE_TAGS:-}" ]; then
+                echo "ready=false" >> "$GITHUB_OUTPUT"
+                echo "Skipping TrueNAS deploy because TAILSCALE_AUTH_MODE=oidc requires TAILSCALE_TAGS to be set to a permitted lowercase tag such as tag:codex." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+            elif [[ "$selected_mode" == "oauth" ]]; then
               if [ -z "${TS_OAUTH_CLIENT_ID:-}" ] || [ -z "${TS_OAUTH_SECRET:-}" ]; then
                 echo "ready=false" >> "$GITHUB_OUTPUT"
                 echo "Skipping TrueNAS deploy because TAILSCALE_AUTH_MODE=oauth but TS_OAUTH_CLIENT_ID/TS_OAUTH_SECRET are not both configured." >> "$GITHUB_STEP_SUMMARY"
@@ -194,6 +212,15 @@ jobs:
           fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
+      - name: Join Tailscale with OpenID Connect
+        if: ${{ steps.prereqs.outputs.ready == 'true' && steps.prereqs.outputs.needs_tailscale == 'true' && steps.prereqs.outputs.tailscale_auth_mode == 'oidc' }}
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ env.TS_OIDC_CLIENT_ID }}
+          audience: ${{ env.TS_OIDC_AUDIENCE }}
+          tags: ${{ steps.prereqs.outputs.tailscale_tags }}
+          ping: ${{ env.TRUENAS_HOST }}
+
       - name: Join Tailscale with OAuth client
         if: ${{ steps.prereqs.outputs.ready == 'true' && steps.prereqs.outputs.needs_tailscale == 'true' && steps.prereqs.outputs.tailscale_auth_mode == 'oauth' }}
         uses: tailscale/github-action@v4
@@ -218,3 +245,4 @@ jobs:
         if: ${{ steps.prereqs.outputs.ready == 'true' }}
         run: |
           echo "TrueNAS deploy attempted for tag ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tailscale auth mode: ${{ steps.prereqs.outputs.tailscale_auth_mode }}" >> "$GITHUB_STEP_SUMMARY"

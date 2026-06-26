@@ -149,12 +149,15 @@ Relevant files:
 
 For Tailscale-hosted TrueNAS deploys, the release workflow supports:
 
+- `TS_OIDC_CLIENT_ID`
+- `TS_OIDC_AUDIENCE`
 - `TS_OAUTH_CLIENT_ID`
 - `TS_OAUTH_SECRET`
 - optional repo variable `TAILSCALE_TAGS`
 - optional repo variable `TAILSCALE_AUTH_MODE`
   - `auto` by default
   - `authkey` is preferred automatically when both auth methods exist
+  - `oidc` uses Tailscale workload identity federation and GitHub's OpenID Connect token flow
   - `oauth` is available once your tailnet permits the tag you choose
 
 `TAILSCALE_AUTHKEY` remains the safest compatibility path for unattended deploys. When you switch to OAuth, use a permitted lowercase tag such as `tag:codex`.

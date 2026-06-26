@@ -42,6 +42,14 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
+        'version': '1.12.9',
+        'date':    '2026-06-26',
+        'features': [
+            'GitHub Actions deploys now support Tailscale OpenID Connect via workload identity federation while keeping auth key fallback for safe rollout',
+            'Deployment docs now call out the Tailscale OIDC client ID and audience values needed to replace long-lived GitHub secrets later',
+        ],
+    },
+    {
         'version': '1.12.8',
         'date':    '2026-06-26',
         'features': [
