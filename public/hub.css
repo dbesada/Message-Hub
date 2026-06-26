@@ -764,6 +764,55 @@ button {
   line-height: 1.5;
 }
 
+.connector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.connector-setup-panel.hidden {
+  display: none;
+}
+
+.connector-setup-panel {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255,255,255,.72);
+  padding: 12px 14px;
+}
+
+.connector-setup-summary {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.connector-setup-details {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.connector-setup-details div {
+  position: relative;
+  padding-left: 12px;
+}
+
+.connector-setup-details div::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(182, 91, 49, .5);
+}
+
 .connector-form textarea {
   min-height: 110px;
   resize: vertical;

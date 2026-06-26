@@ -147,7 +147,14 @@
           <span>Enabled</span>
         </label>
         <p id="connectorHelp" class="connector-help"></p>
-        <button class="primary-btn" type="submit" id="saveConnectorBtn">Save connector</button>
+        <div id="connectorSetupPanel" class="connector-setup-panel hidden">
+          <div id="connectorSetupSummary" class="connector-setup-summary"></div>
+          <div id="connectorSetupDetails" class="connector-setup-details"></div>
+        </div>
+        <div class="connector-actions">
+          <button class="primary-btn" type="submit" id="saveConnectorBtn">Save connector</button>
+          <button class="secondary-btn" type="button" id="testConnectorBtn">Test setup</button>
+        </div>
       </form>
     </div>
   </div>

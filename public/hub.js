@@ -56,6 +56,10 @@ const els = {
   connectorFields: document.getElementById('connectorFields'),
   connectorHelp: document.getElementById('connectorHelp'),
   saveConnectorBtn: document.getElementById('saveConnectorBtn'),
+  connectorSetupPanel: document.getElementById('connectorSetupPanel'),
+  connectorSetupSummary: document.getElementById('connectorSetupSummary'),
+  connectorSetupDetails: document.getElementById('connectorSetupDetails'),
+  testConnectorBtn: document.getElementById('testConnectorBtn'),
 };
 
 function fmtTime(iso) {
@@ -116,6 +120,26 @@ function formatJsonValue(value) {
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (Array.isArray(value)) return value.join(', ');
   return String(value);
+}
+
+function getConnectorStatusClass(connector) {
+  if (!connector?.enabled) return '';
+  if (connector.status === 'connected') return 'on';
+  if (connector.status === 'ready') return 'ready';
+  return '';
+}
+
+function renderSetupPanel(connector = null) {
+  if (!connector?.setup) {
+    els.connectorSetupPanel.classList.add('hidden');
+    els.connectorSetupSummary.textContent = '';
+    els.connectorSetupDetails.innerHTML = '';
+    return;
+  }
+  els.connectorSetupPanel.classList.remove('hidden');
+  els.connectorSetupSummary.textContent = connector.setup.summary || 'Setup status unavailable';
+  const details = connector.setup.details || [];
+  els.connectorSetupDetails.innerHTML = details.map((item) => `<div>${escapeHtml(item)}</div>`).join('');
 }
 
 function escapeHtml(value) {
@@ -238,6 +262,14 @@ function fillConnectorForm(connector = null) {
   els.connectorModalCopy.textContent = connector
     ? `Update the ${meta.label} connection, then sync it again to pull fresh messages.`
     : `Add the ${meta.label} connection and sync its messages into the hub.`;
+  els.testConnectorBtn.disabled = !connector?.id;
+  els.testConnectorBtn.textContent = connector?.id ? 'Test setup' : 'Save first';
+  renderSetupPanel(connector || {
+    setup: {
+      summary: 'Save this connector to test it',
+      details: ['Connection checks run against the saved connector settings on the server.'],
+    },
+  });
 }
 
 function refreshConnectorModal(kind = els.connectorKind.value || 'gmail') {
@@ -253,6 +285,13 @@ function refreshConnectorModal(kind = els.connectorKind.value || 'gmail') {
   els.connectorModalCopy.textContent = state.editingConnectorId
     ? `Update the ${meta.label} connection, then sync it again to pull fresh messages.`
     : `Add the ${meta.label} connection and sync its messages into the hub.`;
+  const existingConnector = state.connectors.find((item) => item.id === state.editingConnectorId);
+  renderSetupPanel(existingConnector && existingConnector.kind === kind ? existingConnector : {
+    setup: {
+      summary: 'Save this connector to test it',
+      details: ['Connection checks run against the saved connector settings on the server.'],
+    },
+  });
 }
 
 function openConnectorEditor(connector = null) {
@@ -361,12 +400,12 @@ function renderConnectors() {
   els.activeFilterLabel.textContent = activeSource;
 
   els.connectorList.innerHTML = state.connectors.map((connector) => {
-    const enabledClass = connector.enabled ? 'on' : '';
-    const readyClass = connector.status === 'ready' ? 'ready' : '';
+    const statusClass = getConnectorStatusClass(connector);
     const activeClass = state.filters.source === connector.id ? 'active' : '';
-    const note = connector.last_error || connector.config?.notes || connector.description || connector.config?.transport || connector.kind;
+    const note = connector.last_error || connector.setup?.summary || connector.config?.notes || connector.description || connector.config?.transport || connector.kind;
     const webhookUrl = connector.ingest_supported ? `${window.location.origin}${connector.webhook_path}` : '';
     const webhookLabel = connector.kind === 'meta' ? 'Meta callback URL' : 'Webhook URL';
+    const setupDetails = (connector.setup?.details || []).slice(0, 2);
     return `
       <article class="connector-card ${activeClass}" data-connector-id="${connector.id}">
         <div class="connector-row">
@@ -375,13 +414,15 @@ function renderConnectors() {
             <span>${connector.label || connector.kind} · ${connector.message_count || 0} messages</span>
           </div>
           <div class="connector-meta">
-            <span class="status-dot ${enabledClass || readyClass}"></span>
+            <span class="status-dot ${statusClass}"></span>
             <button class="tiny-pill" data-sync-connector="${connector.id}" type="button">${connector.sync_supported ? 'Sync now' : 'Webhook'}</button>
+            <button class="tiny-pill" data-test-connector="${connector.id}" type="button">Test setup</button>
             <button class="tiny-pill" data-edit-connector="${connector.id}" type="button">Edit</button>
             <button class="tiny-pill" data-toggle-connector="${connector.id}" type="button">${connector.enabled ? 'Enabled' : 'Paused'}</button>
           </div>
         </div>
         <div class="connector-note">${note || 'Ready for a new adapter'}</div>
+        ${setupDetails.map((item) => `<div class="connector-note">${escapeHtml(item)}</div>`).join('')}
         ${connector.ingest_supported ? `<div class="connector-note">${webhookLabel}: <code>${webhookUrl}</code></div>` : ''}
         ${connector.kind === 'meta' ? `<div class="connector-note">Saved Meta verify tokens stay on the server and are used during the webhook challenge.</div>` : ''}
       </article>
@@ -414,6 +455,13 @@ function renderConnectors() {
       const connector = state.connectors.find((item) => item.id === connectorId);
       if (!connector) return;
       openConnectorEditor(connector);
+    });
+  });
+
+  document.querySelectorAll('[data-test-connector]').forEach((button) => {
+    button.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await runConnectorTest(button.dataset.testConnector, button);
     });
   });
 
@@ -614,6 +662,37 @@ async function patchConnector(connectorId, payload) {
   return response.json();
 }
 
+async function runConnectorTest(connectorId, button = null) {
+  const trigger = button || els.testConnectorBtn;
+  const originalText = trigger.textContent;
+  trigger.textContent = 'Testing...';
+  trigger.disabled = true;
+  try {
+    const response = await fetch(`/hub/api/connectors/${encodeURIComponent(connectorId)}/test`, {
+      method: 'POST',
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body.error || `Unable to test connector (${response.status})`);
+    }
+    const result = body.result || {};
+    const details = result.details || [];
+    const lines = [result.summary || 'Connector test completed'];
+    details.forEach((item) => lines.push(`- ${item}`));
+    alert(lines.join('\n'));
+    await loadBootstrap({ preserveSelection: true });
+    const refreshed = state.connectors.find((item) => item.id === connectorId);
+    if (refreshed && state.editingConnectorId === connectorId) {
+      fillConnectorForm(refreshed);
+    }
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    trigger.textContent = originalText;
+    trigger.disabled = false;
+  }
+}
+
 function openModal() {
   if (!state.editingConnectorId) {
     refreshConnectorModal();
@@ -627,6 +706,9 @@ function closeModal() {
   els.connectorForm.reset();
   els.connectorId.value = '';
   els.connectorFields.innerHTML = '';
+  els.connectorSetupPanel.classList.add('hidden');
+  els.connectorSetupSummary.textContent = '';
+  els.connectorSetupDetails.innerHTML = '';
   els.connectorModal.classList.add('hidden');
   els.connectorModal.setAttribute('aria-hidden', 'true');
 }
@@ -732,6 +814,10 @@ function bindEvents() {
   });
   els.connectorKind.addEventListener('change', () => {
     refreshConnectorModal(els.connectorKind.value);
+  });
+  els.testConnectorBtn.addEventListener('click', async () => {
+    if (!state.editingConnectorId) return;
+    await runConnectorTest(state.editingConnectorId);
   });
   els.connectorForm.addEventListener('submit', (event) => {
     submitConnectorForm(event).catch((error) => {

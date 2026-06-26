@@ -42,6 +42,14 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
+        'version': '1.13.0',
+        'date':    '2026-06-26',
+        'features': [
+            'Connector cards and edit modals now show setup-readiness summaries so saved account details are easier to finish and verify',
+            'Message Hub can now test saved Gmail and Quo connectors live, while Meta, TikTok, and webhook connectors report clear setup gaps before you wire platform-side settings',
+        ],
+    },
+    {
         'version': '1.12.9',
         'date':    '2026-06-26',
         'features': [
@@ -1569,11 +1577,297 @@ def _hub_ingest_payload(conn, connector, payload):
     return _hub_store_message(conn, message)
 
 
+def _hub_mask_secret(value, tail=4):
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    if len(text) <= tail:
+        return '•' * len(text)
+    return f'{"•" * max(4, len(text) - tail)}{text[-tail:]}'
+
+
+def _hub_describe_connector_setup(connector):
+    kind = _hub_canonical_connector_kind(connector.get('kind') or '')
+    config = connector.get('config') if isinstance(connector.get('config'), dict) else {}
+    details = []
+    missing = []
+
+    if kind == 'gmail':
+        username = str(config.get('username') or '').strip()
+        password = str(config.get('password') or '').strip()
+        mailbox = str(config.get('mailbox') or 'INBOX').strip() or 'INBOX'
+        host = str(config.get('host') or 'imap.gmail.com').strip() or 'imap.gmail.com'
+        if username:
+            details.append(f'Username saved: {username}')
+        else:
+            missing.append('Gmail username')
+        if password:
+            details.append(f'App password saved: {_hub_mask_secret(password)}')
+        else:
+            missing.append('Gmail app password')
+        details.append(f'Mailbox: {mailbox}')
+        details.append(f'Host: {host}:{int(config.get("port") or 993)}')
+        if missing:
+            summary = f'Missing {", ".join(missing)}'
+            readiness = 'needs_setup'
+        else:
+            summary = 'Ready for a live IMAP login test'
+            readiness = 'ready'
+    elif kind == 'quo':
+        mode = str(config.get('mode') or 'local_db').strip() or 'local_db'
+        limit = int(config.get('limit') or 250)
+        details.append(f'Mode: {mode}')
+        details.append(f'Import limit: {limit}')
+        if mode == 'api':
+            api_key = str(config.get('api_key') or _credential_get_any('quo_api_key')).strip()
+            if api_key:
+                details.append(f'API key available: {_hub_mask_secret(api_key)}')
+                summary = 'Ready for a live Quo API test'
+                readiness = 'ready'
+            else:
+                summary = 'Missing Quo API key for API mode'
+                readiness = 'needs_setup'
+        else:
+            details.append(f'Local database path: {DB_PATH}')
+            summary = 'Ready to verify the local Quo cache'
+            readiness = 'ready'
+    elif kind == 'meta':
+        channels = config.get('channels') if isinstance(config.get('channels'), list) else []
+        verify_token = str(config.get('verify_token') or '').strip()
+        access_token = str(config.get('access_token') or '').strip()
+        page_id = str(config.get('page_id') or '').strip()
+        instagram_id = str(config.get('instagram_id') or '').strip()
+        if channels:
+            details.append(f'Channels: {", ".join(channels)}')
+        else:
+            missing.append('at least one channel')
+        if verify_token:
+            details.append(f'Webhook verify token saved: {_hub_mask_secret(verify_token)}')
+        else:
+            missing.append('Meta webhook verify token')
+        if page_id:
+            details.append(f'Facebook page ID saved: {page_id}')
+        if instagram_id:
+            details.append(f'Instagram ID saved: {instagram_id}')
+        if access_token:
+            details.append(f'Access token saved: {_hub_mask_secret(access_token)}')
+        if missing:
+            summary = f'Missing {", ".join(missing)}'
+            readiness = 'needs_setup'
+        else:
+            summary = 'Ready for Meta webhook verification'
+            readiness = 'ready'
+    elif kind == 'tiktok':
+        access_token = str(config.get('access_token') or '').strip()
+        app_id = str(config.get('app_id') or '').strip()
+        webhook_secret = str(config.get('webhook_secret') or '').strip()
+        if access_token:
+            details.append(f'Access token saved: {_hub_mask_secret(access_token)}')
+        if app_id:
+            details.append(f'App ID saved: {app_id}')
+        if webhook_secret:
+            details.append(f'Webhook secret saved: {_hub_mask_secret(webhook_secret)}')
+        if access_token or webhook_secret:
+            summary = 'Core TikTok connector settings are saved'
+            readiness = 'ready'
+        else:
+            summary = 'Add a TikTok access token or webhook secret'
+            readiness = 'needs_setup'
+    else:
+        webhook_secret = str(config.get('webhook_secret') or '').strip()
+        target_url = str(config.get('target_url') or '').strip()
+        details.append('Webhook endpoint is available after saving this connector')
+        if target_url:
+            details.append(f'Expected source: {target_url}')
+        if webhook_secret:
+            details.append(f'Shared secret saved: {_hub_mask_secret(webhook_secret)}')
+        summary = 'Ready to receive forwarded payloads'
+        readiness = 'ready'
+
+    return {
+        'summary': summary,
+        'details': details,
+        'missing': missing,
+        'readiness': readiness,
+    }
+
+
+def _hub_validate_connector(conn, connector):
+    kind = _hub_canonical_connector_kind(connector.get('kind') or '')
+    config = connector.get('config') if isinstance(connector.get('config'), dict) else {}
+    setup = _hub_describe_connector_setup(connector)
+    if setup['readiness'] != 'ready':
+        _hub_touch_connector(
+            conn,
+            connector['id'],
+            status='needs_setup',
+            last_error=setup['summary'],
+            last_sync=_hub_now(),
+        )
+        return {
+            'ok': False,
+            'mode': 'configuration',
+            'status': 'needs_setup',
+            'summary': setup['summary'],
+            'details': setup['details'],
+            'missing': setup['missing'],
+        }
+
+    if kind == 'gmail':
+        host = str(config.get('host') or 'imap.gmail.com').strip() or 'imap.gmail.com'
+        port = int(config.get('port') or 993)
+        username = str(config.get('username') or '').strip()
+        password = str(config.get('password') or '').strip()
+        mailbox = str(config.get('mailbox') or 'INBOX').strip() or 'INBOX'
+        use_ssl = config.get('ssl', True) is not False
+        client = None
+        try:
+            client = imaplib.IMAP4_SSL(host, port) if use_ssl else imaplib.IMAP4(host, port)
+            login_response = client.login(username, password)
+            select_status, select_data = client.select(mailbox, readonly=True)
+            if select_status != 'OK':
+                raise ValueError(f'Unable to open mailbox {mailbox}: {select_data!r}')
+            message_count = 0
+            if select_data and select_data[0]:
+                with contextlib.suppress(Exception):
+                    message_count = int(select_data[0])
+            details = [
+                f'Logged in as {username}',
+                f'Mailbox opened: {mailbox}',
+                f'Current message count reported by IMAP: {message_count}',
+            ]
+            if login_response:
+                details.append('IMAP login succeeded')
+            _hub_touch_connector(
+                conn,
+                connector['id'],
+                status='connected',
+                last_error='',
+                last_sync=_hub_now(),
+            )
+            return {
+                'ok': True,
+                'mode': 'live',
+                'status': 'connected',
+                'summary': f'Connected to Gmail mailbox {mailbox}',
+                'details': details,
+                'missing': [],
+            }
+        finally:
+            with contextlib.suppress(Exception):
+                if client is not None:
+                    client.logout()
+
+    if kind == 'quo':
+        mode = str(config.get('mode') or 'local_db').strip() or 'local_db'
+        if mode == 'api':
+            api_key = str(config.get('api_key') or _credential_get_any('quo_api_key')).strip()
+            response_body, status_code = quo_request(api_key, 'GET', '/contacts', params={'limit': 1})
+            if status_code not in (200, 201):
+                error_message = f'Quo API returned {status_code}'
+                if isinstance(response_body, dict) and response_body.get('error'):
+                    error_message = f'{error_message}: {response_body["error"]}'
+                _hub_touch_connector(
+                    conn,
+                    connector['id'],
+                    status='error',
+                    last_error=error_message,
+                    last_sync=_hub_now(),
+                )
+                return {
+                    'ok': False,
+                    'mode': 'live',
+                    'status': 'error',
+                    'summary': error_message,
+                    'details': setup['details'],
+                    'missing': [],
+                }
+            count = len((response_body or {}).get('data') or [])
+            _hub_touch_connector(
+                conn,
+                connector['id'],
+                status='connected',
+                last_error='',
+                last_sync=_hub_now(),
+            )
+            return {
+                'ok': True,
+                'mode': 'live',
+                'status': 'connected',
+                'summary': 'Connected to the Quo API',
+                'details': setup['details'] + [f'Fetched {count} contact record(s) from Quo during the test'],
+                'missing': [],
+            }
+
+        tables = {row['name'] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        missing_tables = [name for name in ('messages', 'contacts') if name not in tables]
+        if missing_tables:
+            summary = f'Local Quo cache is missing table(s): {", ".join(missing_tables)}'
+            _hub_touch_connector(
+                conn,
+                connector['id'],
+                status='error',
+                last_error=summary,
+                last_sync=_hub_now(),
+            )
+            return {
+                'ok': False,
+                'mode': 'local',
+                'status': 'error',
+                'summary': summary,
+                'details': setup['details'],
+                'missing': missing_tables,
+            }
+        message_rows = conn.execute('SELECT COUNT(*) AS n FROM messages').fetchone()['n']
+        contact_rows = conn.execute('SELECT COUNT(*) AS n FROM contacts').fetchone()['n']
+        _hub_touch_connector(
+            conn,
+            connector['id'],
+            status='connected',
+            last_error='',
+            last_sync=_hub_now(),
+        )
+        return {
+            'ok': True,
+            'mode': 'local',
+            'status': 'connected',
+            'summary': 'Local Quo cache is available',
+            'details': setup['details'] + [
+                f'Cached Quo contacts: {contact_rows}',
+                f'Cached Quo messages: {message_rows}',
+            ],
+            'missing': [],
+        }
+
+    _hub_touch_connector(
+        conn,
+        connector['id'],
+        status='ready',
+        last_error='',
+        last_sync=_hub_now(),
+    )
+    summary = setup['summary']
+    if kind == 'meta':
+        summary = 'Meta connector is configured for webhook setup'
+    elif kind == 'tiktok':
+        summary = 'TikTok connector settings are saved and ready for portal-side hookup'
+    elif kind == 'webhook':
+        summary = 'Webhook connector is ready to receive forwarded payloads'
+    return {
+        'ok': True,
+        'mode': 'configuration',
+        'status': 'ready',
+        'summary': summary,
+        'details': setup['details'],
+        'missing': [],
+    }
+
+
 def _hub_connector_row(row):
     config = _json_load(row['config'], {})
     kind = _hub_canonical_connector_kind(row['kind'])
     profile = _hub_profile(kind)
-    return {
+    connector = {
         'id': row['id'],
         'name': row['name'],
         'kind': kind,
@@ -1591,6 +1885,9 @@ def _hub_connector_row(row):
         'webhook_path': f'/hub/api/connectors/{row["id"]}/ingest',
         'default_config': profile.get('default_config', {}),
     }
+    connector['setup'] = _hub_describe_connector_setup(connector)
+    connector['test_supported'] = True
+    return connector
 
 
 def _hub_message_row(row):
@@ -2131,6 +2428,43 @@ def hub_connector_update(connector_id):
             return jsonify({'error': 'Connector not found'}), 404
         row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
         return jsonify({'ok': True, 'data': _hub_connector_row(row)})
+
+
+@app.route('/hub/api/connectors/<connector_id>/test', methods=['POST'])
+def hub_connector_test(connector_id):
+    with get_db() as conn:
+        _hub_seed_if_needed(conn)
+        row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
+        if not row:
+            return jsonify({'error': 'Connector not found'}), 404
+        connector = _hub_connector_row(row)
+        try:
+            result = _hub_validate_connector(conn, connector)
+        except Exception as exc:
+            summary = str(exc).strip() or 'Connector test failed'
+            _hub_touch_connector(
+                conn,
+                connector_id,
+                status='error',
+                last_error=summary,
+                last_sync=_hub_now(),
+            )
+            row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
+            return jsonify({
+                'ok': False,
+                'error': summary,
+                'result': {
+                    'ok': False,
+                    'mode': 'live',
+                    'status': 'error',
+                    'summary': summary,
+                    'details': connector.get('setup', {}).get('details', []),
+                    'missing': [],
+                },
+                'data': _hub_connector_row(row),
+            }), 200
+        row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
+        return jsonify({'ok': bool(result.get('ok')), 'result': result, 'data': _hub_connector_row(row)})
 
 
 @app.route('/hub/api/messages/<message_id>', methods=['GET', 'PATCH'])

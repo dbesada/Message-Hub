@@ -17,6 +17,7 @@ The current product combines:
 - Stores connector configuration and API credentials in SQLite on the server
 - Exposes webhook ingest routes for supported connectors
 - Supports pull-based sync for connectors such as Gmail IMAP and the local Quo cache
+- Lets you test saved connector setup from the hub so missing account details are easier to spot
 - Opens directly without an app-level login gate
 
 ## Current Connectors
