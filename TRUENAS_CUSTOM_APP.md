@@ -109,9 +109,9 @@ Required variable:
 Optional variables:
 
 - `TRUENAS_APP_ID`
-  - default: `quo-manager`
+  - default: `message-hub`
 - `TRUENAS_SERVICE_NAME`
-  - default: `quo-manager`
+  - default: `message-hub`
 - `TRUENAS_PUBLIC_URL`
   - used to generate the icon URL label
 - `TRUENAS_HOST_PATH`
@@ -126,6 +126,7 @@ Optional secret:
 
 For a first cutover from the old `quo-manager` app, keeping `TRUENAS_APP_ID=quo-manager` is the safest path.
 That preserves the live app identity and, by default, preserves the current data mount too.
+For a brand-new install, let the defaults stand so the app is created as `message-hub`.
 
 ## TrueNAS Custom App Settings
 

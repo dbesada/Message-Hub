@@ -6,8 +6,12 @@
 #   Right-click PowerShell → Run as Administrator
 #   cd C:\AI\quo-webapp
 #   .\install-service.ps1
+#   .\install-service.ps1 -ServiceName QuoManager   # keep legacy service name on an upgrade
 
-$ServiceName = "QuoManager"
+param(
+    [string]$ServiceName = "MessageHub"
+)
+
 $AppDir      = "C:\AI\quo-webapp"
 $PythonExe   = (Get-Command python).Source
 $ScriptPath  = "$AppDir\server.py"
@@ -62,6 +66,6 @@ Write-Host "  - It will start automatically when Windows boots."
 Write-Host "  - Access it at: http://localhost:3000"
 Write-Host "  - Logs: $AppDir\service.log"
 Write-Host ""
-Write-Host "To stop:    nssm stop QuoManager"
-Write-Host "To restart: nssm restart QuoManager"
-Write-Host "To remove:  nssm remove QuoManager confirm"
+Write-Host "To stop:    nssm stop $ServiceName"
+Write-Host "To restart: nssm restart $ServiceName"
+Write-Host "To remove:  nssm remove $ServiceName confirm"

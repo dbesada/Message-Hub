@@ -294,8 +294,8 @@ async function main() {
 
   const config = {
     version,
-    appId: envValue('TRUENAS_APP_ID', 'quo-manager'),
-    serviceName: envValue('TRUENAS_SERVICE_NAME', 'quo-manager'),
+    appId: envValue('TRUENAS_APP_ID', deployment.app_name || 'message-hub'),
+    serviceName: envValue('TRUENAS_SERVICE_NAME', deployment.app_name || 'message-hub'),
     displayName: envValue('TRUENAS_DISPLAY_NAME', 'Message Hub'),
     image,
     imageDescription: envValue(
