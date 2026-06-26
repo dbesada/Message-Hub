@@ -121,8 +121,18 @@ Optional variables:
 
 Optional secret:
 
+- `TS_OAUTH_CLIENT_ID`
+- `TS_OAUTH_SECRET`
+  - preferred for GitHub Actions when `TRUENAS_HOST` is a Tailscale `.ts.net` hostname
+  - the Tailscale OAuth client should have writable `auth_keys` scope and at least one tag
 - `TAILSCALE_AUTHKEY`
-  - if set, the GitHub Actions deploy job joins your tailnet before calling the TrueNAS API
+  - legacy fallback if you have not migrated to the OAuth client flow yet
+
+Optional variable:
+
+- `TAILSCALE_TAGS`
+  - default: `tag:ci`
+  - only used by the OAuth client flow
 
 For a first cutover from the old `quo-manager` app, keeping `TRUENAS_APP_ID=quo-manager` is the safest path.
 That preserves the live app identity and, by default, preserves the current data mount too.
@@ -196,6 +206,14 @@ Recommended options:
 - Reverse proxy with HTTPS and access controls
 
 Tailscale is the cleanest first step if this is only for your own computers.
+
+For GitHub Actions deploys that target a Tailscale hostname, the repo now prefers Tailscale's supported OAuth client inputs:
+
+- `TS_OAUTH_CLIENT_ID`
+- `TS_OAUTH_SECRET`
+- `TAILSCALE_TAGS`
+
+`TAILSCALE_AUTHKEY` still works as a fallback, but Tailscale marks that input as deprecated for this GitHub Action path.
 
 ## If You Want to Keep the Private TrueNAS Registry
 

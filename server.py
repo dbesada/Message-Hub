@@ -42,6 +42,15 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
+        'version': '1.12.7',
+        'date':    '2026-06-26',
+        'features': [
+            'GitHub Actions now support current action majors, Tailscale OAuth clients, and smarter deploy prereq checks for tailnet-hosted TrueNAS boxes',
+            'Meta connectors now handle Facebook and Instagram webhook verification plus inbound message normalization instead of treating every payload as a generic webhook',
+            'Message Hub now surfaces real webhook callback URLs in the connector list so Meta setup is easier to finish from the app UI',
+        ],
+    },
+    {
         'version': '1.12.6',
         'date':    '2026-06-25',
         'features': [
@@ -989,6 +998,29 @@ def _hub_parse_datetime(value):
         return _hub_now()
 
 
+def _hub_iso_from_timestamp(value):
+    if value is None or value == '':
+        return _hub_now()
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return _hub_now()
+        if value.isdigit():
+            value = int(value)
+        else:
+            return _hub_parse_datetime(value)
+    if isinstance(value, (int, float)):
+        try:
+            timestamp = float(value)
+            if timestamp > 1_000_000_000_000:
+                timestamp /= 1000.0
+            dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        except Exception:
+            return _hub_now()
+    return _hub_now()
+
+
 def _hub_strip_html(text):
     if not text:
         return ''
@@ -1332,8 +1364,144 @@ def _hub_sync_connector(conn, connector_id):
         raise
 
 
-@_hub_register_ingester('quo')
+def _hub_meta_channel(payload, entry, event):
+    object_kind = str(payload.get('object') or '').strip().lower()
+    messaging_product = str(
+        event.get('messaging_product')
+        or entry.get('messaging_product')
+        or ''
+    ).strip().lower()
+    if object_kind == 'instagram' or messaging_product == 'instagram':
+        return 'Instagram'
+    if object_kind in ('page', 'facebook') or messaging_product in ('messenger', 'facebook'):
+        return 'Facebook'
+    return 'Meta'
+
+
+def _hub_meta_attachment_summary(attachments):
+    parts = []
+    for attachment in attachments[:3]:
+        if not isinstance(attachment, dict):
+            continue
+        kind = str(attachment.get('type') or 'attachment').strip().lower() or 'attachment'
+        payload = attachment.get('payload') if isinstance(attachment.get('payload'), dict) else {}
+        title = str(payload.get('title') or payload.get('url') or '').strip()
+        label = kind.replace('_', ' ').title()
+        parts.append(f'{label}: {title}' if title else label)
+    remaining = max(len(attachments) - len(parts), 0)
+    if remaining:
+        parts.append(f'+{remaining} more attachment{"s" if remaining != 1 else ""}')
+    return '; '.join(parts)
+
+
+def _hub_verify_meta_webhook(conn, connector):
+    mode = str(request.args.get('hub.mode') or '').strip()
+    challenge = str(request.args.get('hub.challenge') or '').strip()
+    verify_token = str(request.args.get('hub.verify_token') or '').strip()
+    expected_token = str((connector.get('config') or {}).get('verify_token') or '').strip()
+    if mode != 'subscribe':
+        raise ValueError('Meta webhook verification requires hub.mode=subscribe')
+    if not expected_token:
+        raise ValueError('Meta connector is missing a webhook verify token')
+    if verify_token != expected_token:
+        raise ValueError('Meta webhook verify token did not match the connector configuration')
+    _hub_touch_connector(
+        conn,
+        connector['id'],
+        status='connected',
+        last_sync=_hub_now(),
+        last_error='',
+    )
+    return challenge
+
+
 @_hub_register_ingester('meta')
+def _hub_ingest_meta(conn, connector, payload):
+    if not isinstance(payload, dict):
+        raise ValueError('Payload must be a JSON object')
+    entries = payload.get('entry')
+    if not isinstance(entries, list) or not entries:
+        return _hub_ingest_payload(conn, connector, payload)
+
+    inserted = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for event in entry.get('messaging') or []:
+            if not isinstance(event, dict):
+                continue
+            message_data = event.get('message') if isinstance(event.get('message'), dict) else {}
+            if message_data.get('is_echo'):
+                continue
+
+            sender_id = str((event.get('sender') or {}).get('id') or '').strip()
+            recipient_id = str((event.get('recipient') or {}).get('id') or '').strip()
+            channel = _hub_meta_channel(payload, entry, event)
+
+            text = str(message_data.get('text') or '').strip()
+            attachments = message_data.get('attachments') if isinstance(message_data.get('attachments'), list) else []
+            attachment_summary = _hub_meta_attachment_summary(attachments)
+            postback = event.get('postback') if isinstance(event.get('postback'), dict) else {}
+            postback_title = str(postback.get('title') or '').strip()
+            postback_payload = str(postback.get('payload') or '').strip()
+            referral = event.get('referral') if isinstance(event.get('referral'), dict) else {}
+            referral_text = str(referral.get('ref') or referral.get('source') or '').strip()
+
+            body_parts = []
+            if text:
+                body_parts.append(text)
+            if attachment_summary:
+                body_parts.append(attachment_summary)
+            if postback_title or postback_payload:
+                body_parts.append(f'Postback: {postback_title or postback_payload}')
+            if referral_text:
+                body_parts.append(f'Referral: {referral_text}')
+
+            body = ' '.join(part for part in body_parts if part).strip()
+            if not body:
+                continue
+
+            timestamp = _hub_iso_from_timestamp(event.get('timestamp') or entry.get('time'))
+            raw = {
+                'source': 'meta',
+                'channel': channel.lower(),
+                'object': str(payload.get('object') or '').strip(),
+                'entry_id': str(entry.get('id') or '').strip(),
+                'sender_id': sender_id,
+                'recipient_id': recipient_id,
+                'event': event,
+            }
+            location_tag, confidence, reason = _hub_classify_location(
+                ' '.join(filter(None, [channel, sender_id, body])),
+                raw,
+            )
+            message_id = (
+                str(message_data.get('mid') or '').strip()
+                or str(postback.get('mid') or '').strip()
+                or f'meta:{connector["id"]}:{sender_id or "unknown"}:{int(time.time() * 1000)}'
+            )
+            normalized = {
+                'id': message_id,
+                'connector_id': connector['id'],
+                'source': channel,
+                'sender': sender_id or channel,
+                'subject': f'{channel} message',
+                'preview': body[:180],
+                'body': body,
+                'received_at': timestamp,
+                'location_tag': location_tag,
+                'location_reason': reason,
+                'status': 'needs_review',
+                'confidence': confidence,
+                'thread_id': sender_id or message_id,
+                'raw': raw,
+            }
+            if _hub_store_message(conn, normalized):
+                inserted += 1
+    return inserted
+
+
+@_hub_register_ingester('quo')
 @_hub_register_ingester('tiktok')
 @_hub_register_ingester('webhook')
 def _hub_generic_ingest(conn, connector, payload):
@@ -2041,9 +2209,8 @@ def hub_connector_sync(connector_id):
         })
 
 
-@app.route('/hub/api/connectors/<connector_id>/ingest', methods=['POST'])
+@app.route('/hub/api/connectors/<connector_id>/ingest', methods=['GET', 'POST'])
 def hub_connector_ingest(connector_id):
-    payload = request.get_json(silent=True) or {}
     with get_db() as conn:
         _hub_seed_if_needed(conn)
         row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
@@ -2052,6 +2219,22 @@ def hub_connector_ingest(connector_id):
         connector = _hub_connector_row(row)
         if not connector.get('ingest_supported'):
             return jsonify({'error': f'{connector["name"]} does not accept webhook ingest'}), 400
+        if request.method == 'GET':
+            if connector.get('kind') != 'meta':
+                return jsonify({'error': f'{connector["name"]} does not support GET webhook verification'}), 405
+            try:
+                challenge = _hub_verify_meta_webhook(conn, connector)
+            except Exception as exc:
+                _hub_touch_connector(
+                    conn,
+                    connector_id,
+                    status='error',
+                    last_error=str(exc),
+                    last_sync=_hub_now(),
+                )
+                return jsonify({'ok': False, 'error': str(exc)}), 400
+            return app.response_class(challenge, mimetype='text/plain')
+        payload = request.get_json(silent=True) or {}
         try:
             ingester = HUB_CONNECTOR_INGESTERS.get(connector.get('kind') or '')
             if not ingester:

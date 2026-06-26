@@ -31,7 +31,8 @@ Current connector types in the codebase:
   - local DB sync today
   - API-oriented settings are already represented in the UI
 - Meta
-  - webhook / token-oriented connector model
+  - verified Facebook / Instagram webhook ingest
+  - token-oriented connector model for future Graph API expansion
 - TikTok
   - webhook / token-oriented connector model
 - Generic webhook
@@ -146,6 +147,14 @@ Relevant files:
 - [`scripts/release-version.ps1`](scripts/release-version.ps1)
 - [`TRUENAS_CUSTOM_APP.md`](TRUENAS_CUSTOM_APP.md)
 
+For Tailscale-hosted TrueNAS deploys, the release workflow now prefers:
+
+- `TS_OAUTH_CLIENT_ID`
+- `TS_OAUTH_SECRET`
+- optional repo variable `TAILSCALE_TAGS` (defaults to `tag:ci`)
+
+`TAILSCALE_AUTHKEY` still works as a fallback, but Tailscale now recommends OAuth clients for GitHub Actions.
+
 ## Project Layout
 
 - [`server.py`](server.py)
@@ -178,6 +187,7 @@ Near-term direction already reflected in the code and deployment work:
 - keep credentials server-side
 - improve unified inbox workflows
 - make releases fully repeatable through GitHub Actions + Docker + TrueNAS
+- keep Meta webhook intake verified and normalized so Facebook / Instagram DMs land in the same review queue as Gmail and Quo
 
 ## License
 

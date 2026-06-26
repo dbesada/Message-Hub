@@ -175,6 +175,7 @@ function renderConnectorFields(kind, config = {}) {
       </div>
       <label>Access token<input name="access_token" type="password" value="${escapeHtml(formatJsonValue(cfg.access_token))}" placeholder="Meta access token"></label>
       <label>Webhook verify token<input name="verify_token" value="${escapeHtml(formatJsonValue(cfg.verify_token))}" placeholder="Optional webhook token"></label>
+      <div class="connector-note">Save the connector first, then use the callback URL shown in the source list as your Meta webhook URL.</div>
       <label>Notes<textarea name="notes" rows="3" placeholder="Optional setup notes">${escapeHtml(commonNotes)}</textarea></label>
     `;
   }
@@ -364,6 +365,8 @@ function renderConnectors() {
     const readyClass = connector.status === 'ready' ? 'ready' : '';
     const activeClass = state.filters.source === connector.id ? 'active' : '';
     const note = connector.last_error || connector.config?.notes || connector.description || connector.config?.transport || connector.kind;
+    const webhookUrl = connector.ingest_supported ? `${window.location.origin}${connector.webhook_path}` : '';
+    const webhookLabel = connector.kind === 'meta' ? 'Meta callback URL' : 'Webhook URL';
     return `
       <article class="connector-card ${activeClass}" data-connector-id="${connector.id}">
         <div class="connector-row">
@@ -379,7 +382,8 @@ function renderConnectors() {
           </div>
         </div>
         <div class="connector-note">${note || 'Ready for a new adapter'}</div>
-        ${connector.ingest_supported ? `<div class="connector-note">Webhook path: <code>${connector.webhook_path}</code></div>` : ''}
+        ${connector.ingest_supported ? `<div class="connector-note">${webhookLabel}: <code>${webhookUrl}</code></div>` : ''}
+        ${connector.kind === 'meta' ? `<div class="connector-note">Saved Meta verify tokens stay on the server and are used during the webhook challenge.</div>` : ''}
       </article>
     `;
   }).join('');
@@ -708,11 +712,11 @@ function bindEvents() {
   });
 
   els.syncBtn.addEventListener('click', async () => {
-    els.syncBtn.textContent = 'Syncing...';
+    els.syncBtn.textContent = 'Refreshing...';
     try {
       await loadBootstrap({ preserveSelection: true });
     } finally {
-      els.syncBtn.textContent = 'Sync sample inbox';
+      els.syncBtn.textContent = 'Refresh inbox';
     }
   });
 
