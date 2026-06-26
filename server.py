@@ -42,6 +42,15 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
+        'version': '1.12.6',
+        'date':    '2026-06-25',
+        'features': [
+            'Fresh TrueNAS deployments now default to the Message Hub app and service identifiers instead of legacy quo-manager names',
+            'TrueNAS deployment docs now distinguish the safe quo-manager upgrade path from the preferred message-hub default for new installs',
+            'Windows service installs now default to MessageHub while still allowing QuoManager as an explicit compatibility override',
+        ],
+    },
+    {
         'version': '1.12.5',
         'date':    '2026-06-25',
         'features': [
