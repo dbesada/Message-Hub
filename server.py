@@ -51,6 +51,14 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
+        'version': '1.16.1',
+        'date':    '2026-06-29',
+        'features': [
+            'Quo API-mode sync now sorts conversations and messages by newest activity before applying connector limits, so recent threads are not pushed behind older history',
+            'Quo API-mode sync now stores the newest live messages first even when the connector is capped to a finite import limit such as 1000',
+        ],
+    },
+    {
         'version': '1.14.0',
         'date':    '2026-06-26',
         'features': [
@@ -1595,6 +1603,16 @@ def _hub_store_quo_message(conn, connector, raw_message, raw_contact=None, conta
     return _hub_store_message(conn, message)
 
 
+def _hub_latest_quo_activity(payload):
+    if not isinstance(payload, dict):
+        return ''
+    for key in ('lastActivityAt', 'updatedAt', 'createdAt'):
+        value = str(payload.get(key) or '').strip()
+        if value:
+            return _hub_parse_datetime(value)
+    return ''
+
+
 def _hub_sync_quo_api(conn, connector, config):
     api_key = str(config.get('api_key') or _credential_get_any('quo_api_key')).strip()
     if not api_key:
@@ -1604,7 +1622,8 @@ def _hub_sync_quo_api(conn, connector, config):
     except Exception:
         limit = 0
     inserted = 0
-    synced_messages = 0
+    conversations = []
+    candidates = []
     seen_message_ids = set()
     page_token = ''
     while True:
@@ -1615,10 +1634,10 @@ def _hub_sync_quo_api(conn, connector, config):
         if status not in (200, 201):
             detail = listing.get('error') if isinstance(listing, dict) else listing
             raise ValueError(f'Quo conversations request failed ({status}): {detail}')
-        conversations = listing.get('data') if isinstance(listing, dict) else []
-        if not isinstance(conversations, list) or not conversations:
+        page_conversations = listing.get('data') if isinstance(listing, dict) else []
+        if not isinstance(page_conversations, list) or not page_conversations:
             break
-        for conversation in conversations:
+        for conversation in page_conversations:
             phone_number_id = str(conversation.get('phoneNumberId') or '').strip()
             participants = [
                 str(item).strip()
@@ -1627,49 +1646,71 @@ def _hub_sync_quo_api(conn, connector, config):
             ]
             if not phone_number_id or not participants:
                 continue
-            message_page_token = ''
-            while True:
-                msg_params = {
-                    'phoneNumberId': phone_number_id,
-                    'maxResults': 50,
-                    'participants': participants,
-                }
-                if message_page_token:
-                    msg_params['pageToken'] = message_page_token
-                messages_payload, message_status = quo_request(api_key, 'GET', '/messages', params=msg_params)
-                if message_status not in (200, 201):
-                    break
-                messages = messages_payload.get('data') if isinstance(messages_payload, dict) else []
-                if not isinstance(messages, list) or not messages:
-                    break
-                for raw_message in messages:
-                    raw_id = str((raw_message or {}).get('id') or '').strip()
-                    if not raw_id or raw_id in seen_message_ids:
-                        continue
-                    seen_message_ids.add(raw_id)
-                    contact_phone = str(_message_participant_phone(raw_message) or participants[0]).strip()
-                    raw_contact = _hub_quo_contact_lookup(conn, contact_phone)
-                    _cache_message(conn, raw_message, contact_phone, phone_number_id)
-                    if _hub_store_quo_message(
-                        conn,
-                        connector,
-                        raw_message,
-                        raw_contact=raw_contact,
-                        contact_phone=contact_phone,
-                        phone_number_id=phone_number_id,
-                    ):
-                        inserted += 1
-                    synced_messages += 1
-                    if limit > 0 and synced_messages >= limit:
-                        return inserted
-                message_page_token = str(messages_payload.get('nextPageToken') or '').strip() if isinstance(messages_payload, dict) else ''
-                if not message_page_token:
-                    break
-            if limit > 0 and synced_messages >= limit:
-                return inserted
+            conversations.append(conversation)
         page_token = str(listing.get('nextPageToken') or '').strip() if isinstance(listing, dict) else ''
         if not page_token:
             break
+
+    conversations.sort(key=_hub_latest_quo_activity, reverse=True)
+
+    for conversation in conversations:
+        phone_number_id = str(conversation.get('phoneNumberId') or '').strip()
+        participants = [
+            str(item).strip()
+            for item in (conversation.get('participants') if isinstance(conversation.get('participants'), list) else [])
+            if str(item).strip()
+        ]
+        if not phone_number_id or not participants:
+            continue
+        message_page_token = ''
+        while True:
+            msg_params = {
+                'phoneNumberId': phone_number_id,
+                'maxResults': 50,
+                'participants': participants,
+            }
+            if message_page_token:
+                msg_params['pageToken'] = message_page_token
+            messages_payload, message_status = quo_request(api_key, 'GET', '/messages', params=msg_params)
+            if message_status not in (200, 201):
+                break
+            messages = messages_payload.get('data') if isinstance(messages_payload, dict) else []
+            if not isinstance(messages, list) or not messages:
+                break
+            for raw_message in messages:
+                raw_id = str((raw_message or {}).get('id') or '').strip()
+                if not raw_id or raw_id in seen_message_ids:
+                    continue
+                seen_message_ids.add(raw_id)
+                contact_phone = str(_message_participant_phone(raw_message) or participants[0]).strip()
+                raw_contact = _hub_quo_contact_lookup(conn, contact_phone)
+                candidates.append({
+                    'activity_at': _hub_latest_quo_activity(raw_message),
+                    'raw_message': raw_message,
+                    'raw_contact': raw_contact,
+                    'contact_phone': contact_phone,
+                    'phone_number_id': phone_number_id,
+                })
+            message_page_token = str(messages_payload.get('nextPageToken') or '').strip() if isinstance(messages_payload, dict) else ''
+            if not message_page_token:
+                break
+
+    candidates.sort(key=lambda item: item['activity_at'], reverse=True)
+    if limit > 0:
+        candidates = candidates[:limit]
+
+    for candidate in candidates:
+        raw_message = candidate['raw_message']
+        _cache_message(conn, raw_message, candidate['contact_phone'], candidate['phone_number_id'])
+        if _hub_store_quo_message(
+            conn,
+            connector,
+            raw_message,
+            raw_contact=candidate['raw_contact'],
+            contact_phone=candidate['contact_phone'],
+            phone_number_id=candidate['phone_number_id'],
+        ):
+            inserted += 1
     return inserted
 
 
