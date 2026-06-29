@@ -51,11 +51,12 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
-        'version': '1.16.1',
+        'version': '1.16.2',
         'date':    '2026-06-29',
         'features': [
             'Quo API-mode sync now sorts conversations and messages by newest activity before applying connector limits, so recent threads are not pushed behind older history',
             'Quo API-mode sync now stores the newest live messages first even when the connector is capped to a finite import limit such as 1000',
+            'Hub timestamp parsing now accepts ISO-8601 API dates before falling back to email-style dates, which keeps Quo message ordering accurate',
         ],
     },
     {
@@ -1230,8 +1231,21 @@ def _hub_decode_header(value):
 def _hub_parse_datetime(value):
     if not value:
         return _hub_now()
+    text = str(value).strip()
+    if not text:
+        return _hub_now()
     try:
-        dt = parsedate_to_datetime(value)
+        iso_text = text
+        if iso_text.endswith('Z'):
+            iso_text = iso_text[:-1] + '+00:00'
+        dt = datetime.fromisoformat(iso_text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    except Exception:
+        pass
+    try:
+        dt = parsedate_to_datetime(text)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
