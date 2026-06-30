@@ -51,6 +51,14 @@ DB_PATH   = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'quo_manager.db'))
 APP_VERSION = load_app_version()
 CHANGELOG = [
     {
+        'version': '1.16.3',
+        'date':    '2026-06-29',
+        'features': [
+            'Connector sync responses now report processed, inserted, and updated counts separately so Quo and Gmail resyncs no longer overstate fresh inserts',
+            'Hub message upserts now distinguish first-time inserts from existing-message refreshes, which makes connector sync accounting accurate for repeated runs',
+        ],
+    },
+    {
         'version': '1.16.2',
         'date':    '2026-06-29',
         'features': [
@@ -1617,6 +1625,47 @@ def _hub_store_quo_message(conn, connector, raw_message, raw_contact=None, conta
     return _hub_store_message(conn, message)
 
 
+def _hub_sync_counts():
+    return {'processed': 0, 'inserted': 0, 'updated': 0}
+
+
+def _hub_sync_tally(counts, store_result):
+    if store_result == 'inserted':
+        counts['processed'] += 1
+        counts['inserted'] += 1
+    elif store_result == 'updated':
+        counts['processed'] += 1
+        counts['updated'] += 1
+    return counts
+
+
+def _hub_sync_result(sync_output):
+    if isinstance(sync_output, dict):
+        try:
+            processed = int(sync_output.get('processed') or 0)
+        except Exception:
+            processed = 0
+        try:
+            inserted = int(sync_output.get('inserted') or 0)
+        except Exception:
+            inserted = 0
+        try:
+            updated = int(sync_output.get('updated') or 0)
+        except Exception:
+            updated = 0
+        return {
+            'processed': max(0, processed),
+            'inserted': max(0, inserted),
+            'updated': max(0, updated),
+        }
+    try:
+        inserted = int(sync_output or 0)
+    except Exception:
+        inserted = 0
+    inserted = max(0, inserted)
+    return {'processed': inserted, 'inserted': inserted, 'updated': 0}
+
+
 def _hub_latest_quo_activity(payload):
     if not isinstance(payload, dict):
         return ''
@@ -1635,7 +1684,7 @@ def _hub_sync_quo_api(conn, connector, config):
         limit = int(config.get('limit') or 0)
     except Exception:
         limit = 0
-    inserted = 0
+    counts = _hub_sync_counts()
     conversations = []
     candidates = []
     seen_message_ids = set()
@@ -1716,16 +1765,15 @@ def _hub_sync_quo_api(conn, connector, config):
     for candidate in candidates:
         raw_message = candidate['raw_message']
         _cache_message(conn, raw_message, candidate['contact_phone'], candidate['phone_number_id'])
-        if _hub_store_quo_message(
+        counts = _hub_sync_tally(counts, _hub_store_quo_message(
             conn,
             connector,
             raw_message,
             raw_contact=candidate['raw_contact'],
             contact_phone=candidate['contact_phone'],
             phone_number_id=candidate['phone_number_id'],
-        ):
-            inserted += 1
-    return inserted
+        ))
+    return counts
 
 
 def _hub_contact_name_from_raw(raw_contact):
@@ -1749,6 +1797,10 @@ def _hub_store_message(conn, message: dict):
     connector_id = str(message.get('connector_id') or '').strip()
     if not msg_id or not connector_id:
         return False
+    existed = conn.execute(
+        'SELECT 1 FROM hub_messages WHERE id = ? LIMIT 1',
+        (msg_id,),
+    ).fetchone() is not None
     source = str(message.get('source') or connector_id).strip() or connector_id
     sender = str(message.get('sender') or '').strip()
     subject = str(message.get('subject') or '').strip()
@@ -1819,7 +1871,7 @@ def _hub_store_message(conn, message: dict):
             _hub_now(),
         ),
     )
-    return True
+    return 'updated' if existed else 'inserted'
 
 
 def _hub_touch_connector(conn, connector_id, **updates):
@@ -1867,11 +1919,11 @@ def _hub_sync_quo_local(conn, connector):
         query += '\nLIMIT ?'
         params = (limit,)
     rows = conn.execute(query, params).fetchall()
-    inserted = 0
+    counts = _hub_sync_counts()
     for row in rows:
         raw_message = _json_load(row['raw'], {})
         raw_contact = _json_load(row['contact_raw'], {})
-        if _hub_store_quo_message(
+        counts = _hub_sync_tally(counts, _hub_store_quo_message(
             conn,
             connector,
             raw_message,
@@ -1880,9 +1932,8 @@ def _hub_sync_quo_local(conn, connector):
             phone_number_id=row['phone_number_id'],
             body_override=str(row['content'] or '').strip(),
             received_at_override=row['msg_created'] or row['msg_updated'] or row['synced_at'] or _hub_now(),
-        ):
-            inserted += 1
-    return inserted
+        ))
+    return counts
 
 
 @_hub_register_syncer('gmail')
@@ -1893,7 +1944,7 @@ def _hub_sync_gmail_imap(conn, connector):
     max_messages = max(1, min(500, int(config.get('max_messages') or 100)))
     if transport == 'google_oauth':
         access_token = _hub_gmail_refresh_access_token(conn, connector['id'], config)
-        inserted = 0
+        counts = _hub_sync_counts()
         seen = 0
         page_token = ''
         while True:
@@ -1944,15 +1995,14 @@ def _hub_sync_gmail_imap(conn, connector):
                         'message_id': message_id,
                     },
                 }
-                if _hub_store_message(conn, message):
-                    inserted += 1
+                counts = _hub_sync_tally(counts, _hub_store_message(conn, message))
                 seen += 1
             if seen >= max_messages:
                 break
             page_token = str(listing.get('nextPageToken') or '').strip()
             if not page_token:
                 break
-        return inserted
+        return counts
 
     host = str(config.get('host') or 'imap.gmail.com').strip()
     port = int(config.get('port') or 993)
@@ -1973,7 +2023,7 @@ def _hub_sync_gmail_imap(conn, connector):
         uids = [uid for uid in (data[0] or b'').split() if uid]
         if max_messages > 0:
             uids = uids[-max_messages:]
-        inserted = 0
+        counts = _hub_sync_counts()
         for uid in uids:
             typ, fetched = client.uid('fetch', uid, '(RFC822)')
             if typ != 'OK' or not fetched:
@@ -2016,9 +2066,8 @@ def _hub_sync_gmail_imap(conn, connector):
                     'message_id': message_id,
                 },
             }
-            if _hub_store_message(conn, message):
-                inserted += 1
-        return inserted
+            counts = _hub_sync_tally(counts, _hub_store_message(conn, message))
+        return counts
     finally:
         with contextlib.suppress(Exception):
             client.logout()
@@ -2035,13 +2084,13 @@ def _hub_sync_connector(conn, connector_id):
         raise ValueError(f'{connector["name"]} is set up as a {kind or "custom"} connector and currently uses webhook ingest only')
 
     _hub_touch_connector(conn, connector_id, status='syncing', last_error='')
-    inserted = 0
+    stats = _hub_sync_counts()
     try:
         syncer = HUB_CONNECTOR_SYNCERS.get(kind)
         if not syncer:
             available = ', '.join(sorted(HUB_CONNECTOR_SYNCERS)) or 'none'
             raise ValueError(f'No sync adapter registered for connector kind {kind!r}. Available adapters: {available}')
-        inserted = syncer(conn, connector)
+        stats = _hub_sync_result(syncer(conn, connector))
         _hub_recount_connectors(conn)
         _hub_touch_connector(
             conn,
@@ -2050,7 +2099,7 @@ def _hub_sync_connector(conn, connector_id):
             last_sync=_hub_now(),
             last_error='',
         )
-        return inserted
+        return stats
     except Exception as exc:
         _hub_touch_connector(
             conn,
@@ -3418,14 +3467,16 @@ def hub_connector_sync(connector_id):
         if not row:
             return jsonify({'error': 'Connector not found'}), 404
         try:
-            inserted = _hub_sync_connector(conn, connector_id)
+            stats = _hub_sync_connector(conn, connector_id)
         except Exception as exc:
             return jsonify({'ok': False, 'error': str(exc)}), 400
         row = conn.execute('SELECT * FROM hub_connectors WHERE id=?', (connector_id,)).fetchone()
         return jsonify({
             'ok': True,
             'data': _hub_connector_row(row),
-            'inserted': inserted,
+            'processed': stats['processed'],
+            'inserted': stats['inserted'],
+            'updated': stats['updated'],
         })
 
 

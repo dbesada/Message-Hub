@@ -1,16 +1,16 @@
 {
-  "name": "message-hub",
-  "version": "1.16.2",
-  "description": "Self-hosted message aggregation and booking triage hub with modular connectors.",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+    "name":  "message-hub",
+    "version":  "1.16.3",
+    "description":  "Self-hosted message aggregation and booking triage hub with modular connectors.",
+    "main":  "server.js",
+    "scripts":  {
+                    "start":  "node server.js",
+                    "dev":  "node --watch server.js"
+                },
+    "dependencies":  {
+                         "express":  "^4.18.2"
+                     },
+    "engines":  {
+                    "node":  "\u003e=18.0.0"
+                }
 }
